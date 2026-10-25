@@ -13,7 +13,7 @@ static void check(const char* n, bool c, const std::string& e = "") {
 int main() {
     // 1) 真实 HTTPS GET（GitHub API，验证 TLS 与解析）
     hs::HttpResult r = hs::httpGet(
-        "https://api.github.com/repos/eyru/hearizon-sync/releases/latest",
+        "https://api.github.com/repos/eyru/HearizonSync/releases/latest",
         {{"User-Agent", "HearizonSync-Test"}, {"Accept", "application/vnd.github+json"}},
         30);
     check("https get ok", r.ok(), "status=" + std::to_string(r.status) + " " + r.error);

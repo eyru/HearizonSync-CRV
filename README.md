@@ -153,6 +153,6 @@ makensis installer\HearizonSyncCRV.nsi
 
 <div align="center">
 
-原项目：[eyru/hearizon-sync](https://github.com/eyru/hearizon-sync)
+原项目：[eyru/HearizonSync](https://github.com/eyru/HearizonSync)
 
 </div>

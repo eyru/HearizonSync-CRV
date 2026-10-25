@@ -25,11 +25,11 @@ void Updater::setCallbacks(AvailableCallback onAvail, ProgressCallback onProgres
 }
 
 std::string Updater::apiUrl() {
-    return "https://api.github.com/repos/eyru/hearizon-sync/releases/latest";
+    return "https://api.github.com/repos/eyru/HearizonSync/releases/latest";
 }
 
 std::string Updater::pageUrl() {
-    return "https://github.com/eyru/hearizon-sync/releases/latest";
+    return "https://github.com/eyru/HearizonSync/releases/latest";
 }
 
 void Updater::cancel() { cancel_.store(true); }

@@ -13,7 +13,9 @@
 #include "core/Util.h"
 #include "platform/Tray.h"
 #include "platform/Updater.h"
+#include "ui/Eggs.h"
 #include "ui/MainWindow.h"
+#include "ui/SettingsWindow.h"
 
 namespace hs {
 
@@ -25,15 +27,18 @@ void showInfoWindow(HWND owner, const std::wstring& title, const std::wstring& t
 }
 
 // 保存文件对话框
-std::string askSavePath(HWND owner, const wchar_t* filter, const wchar_t* defaultName) {
+std::string askSavePath(HWND owner, const wchar_t* filter, const std::wstring& defaultName,
+                        const std::wstring& initialDir = L"") {
     wchar_t path[MAX_PATH * 2] = {0};
-    wcscpy_s(path, defaultName);
+    wcscpy_s(path, defaultName.c_str());
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
     ofn.lpstrFilter = filter;
     ofn.lpstrFile = path;
     ofn.nMaxFile = static_cast<DWORD>(std::size(path));
+    // 初始目录：让用户一打开就是在「文档\Hearizon Sync」
+    if (!initialDir.empty()) ofn.lpstrInitialDir = initialDir.c_str();
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (!GetSaveFileNameW(&ofn)) return std::string();
     return toUtf8(path);
@@ -42,49 +47,22 @@ std::string askSavePath(HWND owner, const wchar_t* filter, const wchar_t* defaul
 }  // namespace
 
 // ---------------------------------------------------------------- 弹窗
+
 void MainWindow::openSettings() {
-    // 用系统对话框承载设置项，保证任何环境下都能操作
-    // 简化实现：逐项询问关键配置
-    std::wstring msg;
-    msg += L"当前配置：\n\n";
-    msg += L"翻译模式：" + toWide(config().translatorMode) + L"\n";
-    msg += L"API 引擎：" + toWide(config().apiEngine) + L"\n";
-    msg += L"DeepSeek Key：" +
-           (config().deepseekKey.empty() ? std::wstring(L"未配置")
-                                         : std::wstring(L"已配置")) +
-           L"\n";
-    msg += L"有道 Key：" +
-           (config().youdaoAppKey.empty() ? std::wstring(L"未配置")
-                                          : std::wstring(L"已配置")) +
-           L"\n";
-    msg += L"MyMemory 邮箱：" +
-           (config().mymemoryEmail.empty() ? std::wstring(L"未配置")
-                                           : toWide(config().mymemoryEmail)) +
-           L"\n";
-    msg += L"热词：" +
-           (config().hotwords.empty() ? std::wstring(L"未设置")
-                                      : toWide(config().hotwords)) +
-           L"\n";
-    msg += L"\n设置保存在：" + toWide(configPath());
-    showInfoWindow(hwnd_, L"设置", msg);
+    bool saved = showSettings(hwnd_);
+    if (!saved) return;
+
+    // 配置变了：刷新依赖配置的控件与模型
+    Config& c = config();
+    correctCheck_.setChecked(c.autoCorrect);
+    gpuCheck_.setChecked(c.gpuAccel);
+    if (recognizer_) recognizer_->invalidate();
+    if (translator_) translator_->invalidateLocal();
+    setStatus("设置已保存", theme().green);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::openAbout() {
-    std::wstring msg;
-    msg += L"Hearizon Sync C.R.V.\n";
-    msg += L"版本 " + toWide(appVersion()) + L"\n\n";
-    msg += L"C++ 重写版（CppRebuildVersion）\n";
-    msg += L"作者：何瑞程\n";
-    msg += L"北京语言大学 海南国际学院\n\n";
-    msg += L"麦克风实时字幕翻译\n";
-    msg += L"本地识别 · 三种翻译模式 · 断网可用\n\n";
-    msg += L"（连点版本号 5 次有惊喜）";
-
-    int ret = MessageBoxW(hwnd_, msg.c_str(), L"关于", MB_OKCANCEL | MB_ICONINFORMATION);
-    if (ret == IDOK) {
-        onVersionClicked();
-    }
-}
+void MainWindow::openAbout() { eggs::showAbout(hwnd_); }
 
 void MainWindow::testMic() {
     int devIndex = 0;
@@ -110,12 +88,16 @@ void MainWindow::testMic() {
 }
 
 void MainWindow::saveRecord() {
-    std::string path = askSavePath(hwnd_,
-                                   L"文本文件\0*.txt\0所有文件\0*.*\0", L"HearizonSync记录.txt");
+    std::string dir = outputDir();
+    std::wstring name = toWide("同传记录_" + fileTimestamp() + ".txt");
+    std::string path = askSavePath(hwnd_, L"文本文件\0*.txt\0所有文件\0*.*\0", name,
+                                   toWide(dir));
     if (path.empty()) return;
 
     std::string content;
-    content += "Hearizon Sync 记录\n";
+    content += "Hearizon Sync 同传记录\n";
+    content += "版本 " + appVersion() + "\n";
+    content += "导出时间：" + nowDateString() + " " + nowTimeString() + "\n";
     content += "==============\n\n";
     content += "原文：\n" + srcView_.text() + "\n\n";
     content += "译文：\n" + dstView_.text() + "\n";
@@ -127,40 +109,92 @@ void MainWindow::saveRecord() {
 }
 
 void MainWindow::exportSrt() {
-    std::string path = askSavePath(hwnd_,
-                                   L"SRT 字幕\0*.srt\0所有文件\0*.*\0", L"HearizonSync.srt");
+    // 与 Python 版一致：优先用每句的真实起止时间；没有实时记录时按行估算
+    struct Item {
+        double start, endd;
+        std::string text;
+    };
+    std::vector<Item> items;
+    for (const Segment& seg : segments_) {
+        std::string src = trim(seg.src);
+        std::string dst = trim(seg.dst);
+        if (src.empty() && dst.empty()) continue;
+        Item it;
+        it.start = seg.start;
+        it.endd = seg.end;
+        it.text = dst.empty() ? src : dst;
+        items.push_back(it);
+    }
+
+    if (items.empty()) {
+        // 兜底：只用字幕框内容，按每行 3 秒估算
+        std::string trans = trim(dstView_.text());
+        std::string raw = trim(srcView_.text());
+        if (trans.empty() && raw.empty()) {
+            MessageBoxW(hwnd_, L"还没有字幕内容", L"SRT 导出", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        const std::string& base = trans.empty() ? raw : trans;
+        size_t pos = 0;
+        int i = 0;
+        while (pos <= base.size()) {
+            size_t nl = base.find('\n', pos);
+            std::string line = nl == std::string::npos ? base.substr(pos)
+                                                       : base.substr(pos, nl - pos);
+            line = trim(line);
+            if (!line.empty()) {
+                Item it;
+                it.start = i * 3.0;
+                it.endd = (i + 1) * 3.0;
+                it.text = line;
+                items.push_back(it);
+                ++i;
+            }
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        }
+        if (items.empty()) {
+            MessageBoxW(hwnd_, L"还没有字幕内容", L"SRT 导出", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+    }
+
+    // 时间轴换算成相对会话开始，并保证相邻句不重叠
+    double t0 = items.front().start;
+    std::string content;
+    for (size_t i = 0; i < items.size(); ++i) {
+        double st = items[i].start - t0;
+        if (st < 0) st = 0;
+        double en = items[i].endd - t0;
+        if (en < st + 0.6) en = st + 0.6;
+        if (i + 1 < items.size()) {
+            double nxt = items[i + 1].start - t0;
+            if (nxt < 0) nxt = 0;
+            if (nxt > st + 0.2 && en > nxt - 0.02) en = nxt - 0.02;
+        }
+        if (en <= st) en = st + 0.6;
+
+        std::string text = items[i].text;
+        for (char& c : text) {
+            if (c == '\n' || c == '\r') c = ' ';
+        }
+        content += std::to_string(i + 1) + "\n";
+        content += fmtSrtTime(st) + " --> " + fmtSrtTime(en) + "\n";
+        content += text + "\n\n";
+    }
+
+    std::string dir = outputDir();
+    std::wstring name = toWide("同传字幕_" + fileTimestamp() + ".srt");
+    std::string path = askSavePath(hwnd_, L"SRT 字幕\0*.srt\0所有文件\0*.*\0", name,
+                                   toWide(dir));
     if (path.empty()) return;
 
-    // 简化：按行顺序生成，时间轴使用累计秒数
-    std::string content;
-    std::vector<std::string> srcLines;
-    std::string all = srcView_.text();
-    size_t start = 0;
-    while (start <= all.size()) {
-        size_t nl = all.find('\n', start);
-        std::string line =
-            nl == std::string::npos ? all.substr(start) : all.substr(start, nl - start);
-        if (!trim(line).empty()) srcLines.push_back(line);
-        if (nl == std::string::npos) break;
-        start = nl + 1;
-    }
-
-    int index = 1;
-    for (size_t i = 0; i < srcLines.size(); ++i) {
-        int s0 = static_cast<int>(i) * 2;
-        char timeBuf[64];
-        std::snprintf(timeBuf, sizeof(timeBuf),
-                      "%02d:%02d:%02d,000 --> %02d:%02d:%02d,000", s0 / 3600,
-                      (s0 / 60) % 60, s0 % 60, (s0 + 2) / 3600, ((s0 + 2) / 60) % 60,
-                      (s0 + 2) % 60);
-        content += std::to_string(index++) + "\n";
-        content += std::string(timeBuf) + "\n";
-        content += srcLines[i] + "\n\n";
-    }
-
     if (writeTextFile(path, content)) {
+        MessageBoxW(hwnd_, toWide("SRT 已导出：\n" + path).c_str(), L"SRT 已导出",
+                    MB_OK | MB_ICONINFORMATION);
         setStatus("已导出 SRT：" + path, theme().green);
     } else {
+        MessageBoxW(hwnd_, L"导出失败：没有写入权限", L"导出失败", MB_OK | MB_ICONWARNING);
         setStatus("导出失败", theme().red);
     }
 }
@@ -243,18 +277,28 @@ void MainWindow::checkUpdateAsync() {
 
 void MainWindow::showUpdateDialog(const std::string& tag, const std::string& body,
                                   const std::string& url, const std::string& page) {
-    (void)page;
-    std::wstring msg;
-    msg += L"发现新版本 " + toWide(tag) + L"\n";
-    msg += L"当前版本 v" + toWide(appVersion()) + L"\n\n";
-    msg += toWide(markdownToPlain(body, 1200));
-    msg += L"\n\n是否现在下载并安装？\n（选择「否」将稍后提醒）";
+    // 已勾选「跳过这个版本」的 tag 不再弹窗（与 Python 版 update_skip_tag 一致）
+    if (!config().updateSkipTag.empty() && config().updateSkipTag == tag) return;
 
-    int ret = MessageBoxW(hwnd_, msg.c_str(), L"发现新版本",
-                          MB_YESNO | MB_ICONINFORMATION);
-    if (ret == IDYES && !url.empty()) {
-        startDownload(url, tag);
+    bool skip = false;
+    bool go = showUpdateDialogModal(hwnd_, tag, body, &skip);
+
+    if (skip) {
+        config().updateSkipTag = tag;
+        saveConfig();
     }
+    if (!go) return;
+
+    if (url.empty()) {
+        std::string target = page.empty() ? "https://github.com/eyru/HearizonSync-CRV/releases"
+                                          : page;
+        MessageBoxW(hwnd_,
+                    toWide("这个版本还没有上传安装包，可以到发布页手动下载：\n" + target).c_str(),
+                    L"暂时没有可下载的安装包", MB_OK | MB_ICONINFORMATION);
+        ShellExecuteW(nullptr, L"open", toWide(target).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    startDownload(url, tag);
 }
 
 void MainWindow::startDownload(const std::string& url, const std::string& tag) {
@@ -264,96 +308,4 @@ void MainWindow::startDownload(const std::string& url, const std::string& tag) {
 }
 
 // ---------------------------------------------------------------- 独家模块
-void MainWindow::onVersionClicked() {
-    DWORD now = GetTickCount();
-    if (now - lastVersionClick_ > 1600) versionClicks_ = 0;
-    lastVersionClick_ = now;
-    ++versionClicks_;
-    if (versionClicks_ >= 5) {
-        versionClicks_ = 0;
-        horizonText_ = str::kModuleHorizon;
-        MessageBoxW(hwnd_, toWide(horizonText_).c_str(), L"Hearizon Sync",
-                    MB_OK | MB_ICONINFORMATION);
-    } else {
-        SetTimer(hwnd_, kTimerVersionReset, 1600, nullptr);
-    }
-}
-
-void MainWindow::showModuleThanks() {
-    // 模块 2-2
-    std::wstring msg;
-    msg += toWide(str::kModuleThanksTitle) + L"\n";
-    msg += toWide(str::kModuleThanksNote) + L"\n\n";
-    msg += L"周延通      澳门科技大学 · 商学院\n";
-    msg += L"鲍思源      北京语言大学 · 海南国际学院\n";
-    msg += L"李新元      北京语言大学 · 海南国际学院\n";
-    msg += L"李进平      北京语言大学 · 海南国际学院\n";
-    msg += L"姚铸宸      北京语言大学 · 海南国际学院\n";
-    msg += L"王舒楠      北京语言大学 · 心理与认知科学学院\n";
-    msg += L"朱睿杰      北京语言大学 · 外国语言文化学院\n";
-    msg += L"郑紫涵      四川农业大学 · 商旅学院\n";
-    msg += L"梁嘉铭      中央民族大学 · 海南国际学院\n\n";
-    msg += L"谢谢你们听我讲完这个想法，也谢谢你们帮我把它做出来。";
-    MessageBoxW(hwnd_, msg.c_str(), L"致谢名单", MB_OK | MB_ICONINFORMATION);
-}
-
-void MainWindow::showModulePoem() {
-    // 模块 2-1
-    MessageBoxW(hwnd_, L"山有木兮木有枝\n心悦君兮君不知", L"山有木兮",
-                MB_OK | MB_ICONINFORMATION);
-}
-
-void MainWindow::showModuleDeveloper() {
-    // 模块 2
-    std::wstring msg;
-    msg += L"何瑞程\n";
-    msg += L"北京语言大学 · 海南国际学院\n";
-    msg += L"听力与言语康复学（本科生）\n";
-    msg += L"Hearizon Sync 作者\n\n";
-    msg += L"个人网站：eyru.github.io/personalweb\n";
-    msg += L"（点击才会打开浏览器，不会自动跳转）";
-    int ret = MessageBoxW(hwnd_, msg.c_str(), L"关于作者",
-                          MB_OKCANCEL | MB_ICONINFORMATION);
-    if (ret == IDOK) {
-        ShellExecuteW(nullptr, L"open", L"https://eyru.github.io/personalweb/", nullptr,
-                      nullptr, SW_SHOWNORMAL);
-    }
-}
-
-void MainWindow::checkEggInput(const std::string& text, int ctrlId) {
-    (void)ctrlId;
-    // 独家模块 2 系列：按码点拼装触发词，源码中不出现明文
-    static const unsigned kThanks[] = {0x81F4, 0x8C22, 0x540D, 0x5355};
-    static const unsigned kPoem[] = {0x5C71, 0x6709, 0x6728, 0x516E,
-                                     0x6728, 0x6709, 0x679D};
-    static const unsigned kDev[] = {0x77, 0x68, 0x6F, 0x6D,
-                                    0x61, 0x64, 0x65, 0x69, 0x74};
-
-    auto build = [](const unsigned* cps, size_t n) {
-        std::string s;
-        for (size_t i = 0; i < n; ++i) {
-            unsigned cp = cps[i];
-            if (cp < 0x80) {
-                s += static_cast<char>(cp);
-            } else if (cp < 0x800) {
-                s += static_cast<char>(0xC0 | (cp >> 6));
-                s += static_cast<char>(0x80 | (cp & 0x3F));
-            } else {
-                s += static_cast<char>(0xE0 | (cp >> 12));
-                s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-                s += static_cast<char>(0x80 | (cp & 0x3F));
-            }
-        }
-        return s;
-    };
-
-    if (text == build(kThanks, std::size(kThanks))) {
-        showModuleThanks();
-    } else if (text == build(kPoem, std::size(kPoem))) {
-        showModulePoem();
-    } else if (text == build(kDev, std::size(kDev))) {
-        showModuleDeveloper();
-    }
-}
-
 }  // namespace hs

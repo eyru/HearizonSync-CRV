@@ -50,8 +50,9 @@ struct Config {
     int subSizeSrc = 14;
     int windowX = -1;
     int windowY = -1;
-    int windowW = 1180;
-    int windowH = 780;
+    int windowW = 0;   // 0 = 按 DPI 推导默认值
+    int windowH = 0;
+    bool windowMaximized = false;
 
     // 更新
     bool updateCheck = true;

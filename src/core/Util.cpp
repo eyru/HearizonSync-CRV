@@ -1,6 +1,7 @@
 #include "Util.h"
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <chrono>
 #include <cstdio>
@@ -399,6 +400,56 @@ std::string md5Hex(const std::string& input) {
     Md5 m;
     m.update(reinterpret_cast<const unsigned char*>(input.data()), input.size());
     return m.hex();
+}
+
+
+std::string fileTimestamp() {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth,
+                  st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return buf;
+}
+
+std::string outputDir() {
+    // 与 Python 版一致的候选顺序：文档 / 桌面 / 用户目录 / 临时目录
+    const char* kSub = "Hearizon Sync";
+    std::vector<std::string> candidates;
+
+    wchar_t docs[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, 0x0005 /*CSIDL_PERSONAL*/ | 0x4000 /*PER_USER*/,
+                                   nullptr, 0, docs))) {
+        candidates.push_back(joinPath(toUtf8(docs), kSub));
+    }
+    wchar_t desktop[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, 0x0010 /*CSIDL_DESKTOPDIRECTORY*/ | 0x4000, nullptr,
+                                   0, desktop))) {
+        candidates.push_back(joinPath(toUtf8(desktop), kSub));
+    }
+    candidates.push_back(joinPath(userHome(), kSub));
+    candidates.push_back(joinPath(tempDir(), kSub));
+
+    for (const std::string& dir : candidates) {
+        if (dirExists(dir)) return dir;
+        std::wstring w = toWide(dir);
+        // 逐级创建（Documents 一定存在，这里只差最后一级）
+        if (CreateDirectoryW(w.c_str(), nullptr)) return dir;
+        if (GetLastError() == ERROR_ALREADY_EXISTS) return dir;
+    }
+    return userHome();
+}
+
+std::string fmtSrtTime(double seconds) {
+    if (seconds < 0) seconds = 0;
+    long long total = static_cast<long long>(seconds * 1000.0 + 0.5);
+    long long ms = total % 1000;
+    long long sec = (total / 1000) % 60;
+    long long min = (total / 60000) % 60;
+    long long hour = total / 3600000;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%02lld:%02lld:%02lld,%03lld", hour, min, sec, ms);
+    return buf;
 }
 
 }  // namespace hs

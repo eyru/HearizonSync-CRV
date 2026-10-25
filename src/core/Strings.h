@@ -9,6 +9,7 @@ namespace str {
 // 窗口与标题
 extern const char* kAppTitle;
 extern const char* kSidebarTitle;
+extern const char* kSidebarTagline;
 
 // 侧栏字段
 extern const char* kInputLang;
@@ -79,8 +80,24 @@ extern const char* kVbCableTitle;
 extern const char* kVbCableHint;
 extern const char* kGpuTitle;
 extern const char* kGpuHint;
+extern const char* kGpuProbing;
+extern const char* kGpuOnOk;
+extern const char* kGpuOff;
+extern const char* kGpuFailPrefix;
+extern const char* kGpuWarnTitle;
+extern const char* kGpuWarnBodyHasCard;
+extern const char* kGpuInfoTitle;
+extern const char* kGpuInfoBodyNoCard;
 
 // 更新
+extern const char* kSrcPlaceholder;
+extern const char* kDstPlaceholder;
+extern const char* kNoSubtitle;
+extern const char* kLangChanged;
+extern const char* kEngineChanged;
+extern const char* kEngineChangedTail;
+extern const char* kTrayUnavailable;
+extern const char* kModelReady;
 extern const char* kUpdateAvailable;
 extern const char* kUpdateLater;
 extern const char* kUpdateDownload;
@@ -89,12 +106,29 @@ extern const char* kUpdateDownloading;
 extern const char* kUpdateDone;
 extern const char* kUpdateFailed;
 
+// 关于窗口
+extern const char* kAboutTagline;
+extern const char* kAuthorName;
+extern const char* kLicenseLine;
+extern const char* kAsrLine;
+extern const char* kMtLine;
+extern const char* kNotMedical;
+
 // 独家模块
 extern const char* kModuleThanksTitle;
 extern const char* kModuleThanksNote;
 extern const char* kModulePoemTitle;
 extern const char* kModuleDeveloperTitle;
 extern const char* kModuleHorizon;
+extern const char* kThanksFooter;
+extern const char* kPoemLine1;
+extern const char* kPoemLine2;
+extern const char* kPoemSource;
+extern const char* kAuthorSchool;
+extern const char* kAuthorMajor;
+extern const char* kAuthorDesc;
+extern const char* kPersonalSite;
+extern const char* kLinkNote;
 
 // 托盘
 extern const char* kTrayTip;

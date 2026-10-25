@@ -1,0 +1,44 @@
+// Hearizon Sync C.R.V. - 资源脚本
+// 作用：把 icon 编译进 exe，这样窗口标题栏、任务栏、资源管理器都显示自己的 logo。
+// 路径相对于项目根目录（build.bat 会 cd 到根目录再调 rc.exe）。
+
+#include <windows.h>
+
+// 文件是 UTF-8，告诉编译器按 UTF-8 读中文
+#pragma code_page(65001)
+
+// 应用程序清单：启用 comctl32 v6（现代控件外观 + TaskDialog）
+1 24 "app.manifest"
+
+// 程序图标（多尺寸 ico，16/24/32/48/64/128/256 都在里面）
+APPICON ICON "resources\\app.ico"
+
+// 运行中图标（托盘亮起状态用）
+APPLIVE ICON "resources\\app-icon-live.ico"
+
+// 版本信息：右键 exe -> 属性 -> 详细信息 里显示
+1 VERSIONINFO
+FILEVERSION     2,5,6,0
+PRODUCTVERSION  2,5,6,0
+FILEOS          0x40004L
+FILETYPE        0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "何瑞程"
+            VALUE "FileDescription",  "Hearizon Sync C.R.V. - 实时字幕翻译"
+            VALUE "FileVersion",      "2.5.6.0"
+            VALUE "InternalName",     "HearizonSync"
+            VALUE "LegalCopyright",   "GPL-3.0-or-later"
+            VALUE "OriginalFilename", "HearizonSync.exe"
+            VALUE "ProductName",      "Hearizon Sync C.R.V."
+            VALUE "ProductVersion",   "2.5.6.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

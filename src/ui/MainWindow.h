@@ -16,13 +16,26 @@
 #include "asr/Recognizer.h"
 #include "audio/AudioCapture.h"
 #include "core/Config.h"
+#include "core/Gpu.h"
 #include "mt/Translator.h"
 #include "ui/Widgets.h"
 
 namespace hs {
 
+// 新版本提示窗口（模态）：返回 true = 下载并安装；outSkip = 勾选了跳过该版本
+bool showUpdateDialogModal(HWND owner, const std::string& tag, const std::string& body,
+                           bool* outSkip);
+
 class TrayIcon;
 class Updater;
+
+// SRT 用的真实时间轴记录（每句的起止时间 + 原文/译文）
+struct Segment {
+    double start = 0.0;   // 相对会话开始的秒数
+    double end = 0.0;
+    std::string src;
+    std::string dst;
+};
 
 // 界面消息
 struct UiMessage {
@@ -81,6 +94,7 @@ private:
     void onMouseUp(int x, int y);
     void onMouseWheel(int delta, int x, int y);
     void onKeyDown(WPARAM key);
+    void applyFontStep(int delta);
     void onTimer(UINT_PTR id);
 
     // 业务
@@ -102,6 +116,7 @@ private:
     void onCorrectToggled(bool on);
     void onThemeChanged(int index);
     void onPositionChanged(bool top);
+    void updatePosButtons();
     void refreshDevices();
     void applyModeLanguages();
 
@@ -125,11 +140,6 @@ private:
     void startDownload(const std::string& url, const std::string& tag);
 
     // 独家模块
-    void onVersionClicked();
-    void checkEggInput(const std::string& text, int ctrlId);
-    void showModuleThanks();
-    void showModulePoem();
-    void showModuleDeveloper();
 
     HINSTANCE hInst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -152,6 +162,8 @@ private:
     Button btnTray_;
     Button btnAbout_;
     Button btnRefresh_;
+    Button btnSettings_;
+    Button btnGear_;      // 品牌区右上角的设置齿轮
     Button btnTheme_;
     Button btnPosBottom_;
     Button btnPosTop_;
@@ -171,6 +183,14 @@ private:
     RECT rcSrcPanel_{};
     RECT rcDstPanel_{};
     RECT rcStatus_{};
+    RECT rcVersion_{};   // 状态栏版本号命中区（连点彩蛋）
+    int labelH_ = 0;     // 侧栏字段标签高度（随窗口自适应）
+    int labelGap_ = 0;   // 标签与控件的间隙
+    int dividerY_ = 0;   // 字幕分区上方的分隔线 y（布局时写入）
+    int sideTop_ = 0;     // 侧栏可滚动区域上沿
+    int sideBottom_ = 0;  // 侧栏可滚动区域下沿
+    int sideScroll_ = 0;  // 侧栏当前滚动量（像素）
+    int sideMax_ = 0;     // 侧栏最大滚动量，0 表示无需滚动
 
     // 业务对象
     std::unique_ptr<AudioCapture> capture_;
@@ -201,8 +221,6 @@ private:
     int themeIndex_ = 0;
 
     // 关于页彩蛋计数
-    int versionClicks_ = 0;
-    DWORD lastVersionClick_ = 0;
     std::string horizonText_;
 
     // 拖拽与弹层
@@ -214,11 +232,22 @@ private:
     // 定时器
     static constexpr UINT_PTR kTimerPump = 1;
     static constexpr UINT_PTR kTimerUpdate = 2;
+    static constexpr UINT_PTR kTimerWelcome = 3;
     static constexpr UINT_PTR kTimerSilence = 3;
-    static constexpr UINT_PTR kTimerVersionReset = 4;
 
     DWORD lastSpeechTick_ = 0;
     bool silenceWarned_ = false;
+
+    // 真实时间轴（导出 SRT 用）
+    std::vector<Segment> segments_;
+    double sessionStart_ = 0.0;
+
+    // GPU 探测（后台线程，结果经 WM_APP+2 回到 UI 线程）
+    std::thread gpuThread_;
+    std::mutex gpuMtx_;
+    gpu::ProbeResult gpuResult_;
+    bool gpuProbePending_ = false;
+    void onGpuProbeDone();
 };
 
 // 全局窗口指针（窗口过程需要）

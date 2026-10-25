@@ -104,6 +104,19 @@ int Dpi::sp(int px) {
     return v < 1 ? 1 : v;
 }
 
+double Dpi::uiScale() {
+    double v = scale();
+    return v < 1.0 ? 1.0 : v;
+}
+
+double Dpi::systemScale() {
+    HDC dc = GetDC(nullptr);
+    int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    if (dc) ReleaseDC(nullptr, dc);
+    double v = dpi > 0 ? dpi / 96.0 : 1.0;
+    return v < 1.0 ? 1.0 : v;
+}
+
 int Dpi::fontPt(int pt) {
     int v = static_cast<int>(pt * g_scale + 0.5);
     return v < 1 ? 1 : v;
@@ -145,6 +158,21 @@ HFONT monoFont(int pt) {
 void clearFontCache() {
     for (auto& kv : g_fonts) DeleteObject(kv.second);
     g_fonts.clear();
+}
+
+HICON appIcon(int px, bool live) {
+    if (px < 8) px = 8;
+    // 缓存：同一个尺寸只从资源读一次
+    static std::map<int, HICON> idleCache, liveCache;
+    std::map<int, HICON>& cache = live ? liveCache : idleCache;
+    auto it = cache.find(px);
+    if (it != cache.end()) return it->second;
+
+    const wchar_t* name = live ? L"APPLIVE" : L"APPICON";
+    HICON icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), name, IMAGE_ICON,
+                                              px, px, LR_DEFAULTCOLOR));
+    cache[px] = icon;
+    return icon;
 }
 
 }  // namespace hs

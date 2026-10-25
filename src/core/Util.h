@@ -36,6 +36,14 @@ std::string appVersion();
 // 时间
 std::string nowTimeString();          // HH:MM:SS
 std::string nowDateString();          // YYYY-MM-DD
+std::string fileTimestamp();          // YYYYmmdd_HHMMSS（文件名用）
+
+// 保存/导出目录：优先「文档\Hearizon Sync」，逐个探测可写位置，
+// 保证装在 Program Files 时也能落地（对应 Python 版 _output_dir()）。
+std::string outputDir();
+
+// 秒 -> SRT 时间戳 HH:MM:SS,mmm
+std::string fmtSrtTime(double seconds);
 double nowSeconds();                  // 单调时钟秒
 
 // SHA256（有道 v3 签名需要）

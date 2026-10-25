@@ -1,7 +1,7 @@
 #include "Widgets.h"
 
 #include <algorithm>
-
+#include <cmath>
 #include <cstring>
 
 #include "core/Theme.h"
@@ -65,6 +65,38 @@ void Button::paint(HDC dc, const RECT& client) {
     RECT textRc = rc;
     if (anchorLeft_) textRc.left += 14;
     drawText(dc, text_, textRc, fg_, font_, fmt);
+
+    if (drawGear_) {
+        // 矢量齿轮：8 个齿 + 中孔，比字体里的 U+2699 清晰得多
+        const int cx = (rc.left + rc.right) / 2;
+        const int cy = (rc.top + rc.bottom) / 2;
+        int rOuter = (rc.right - rc.left) * 24 / 100;
+        int rInner = rOuter * 72 / 100;
+        int tooth = rOuter * 26 / 100;
+        if (rOuter < 4) rOuter = 4;
+        if (rInner < 3) rInner = 3;
+        if (tooth < 2) tooth = 2;
+
+        HPEN pen = CreatePen(PS_SOLID, 2, fg_);
+        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+
+        const int kTeeth = 8;
+        for (int i = 0; i < kTeeth; ++i) {
+            double ang = i * (2.0 * 3.14159265358979 / kTeeth);
+            int x1 = cx + static_cast<int>(std::cos(ang) * rInner);
+            int y1 = cy + static_cast<int>(std::sin(ang) * rInner);
+            int x2 = cx + static_cast<int>(std::cos(ang) * (rInner + tooth));
+            int y2 = cy + static_cast<int>(std::sin(ang) * (rInner + tooth));
+            MoveToEx(dc, x1, y1, nullptr);
+            LineTo(dc, x2, y2);
+        }
+        Ellipse(dc, cx - rInner, cy - rInner, cx + rInner, cy + rInner);
+
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
 }
 
 void Button::onMouseMove(int x, int y) {
@@ -119,16 +151,14 @@ int CheckBox::measuredWidth(HDC dc) const {
     SIZE sz{};
     GetTextExtentPoint32W(dc, text_.c_str(), static_cast<int>(text_.size()), &sz);
     SelectObject(dc, old);
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
     return sz.cx + 15 * scale + 12 * scale + 12 * scale;
 }
 
 void CheckBox::paint(HDC dc) {
     int h = rect_.bottom - rect_.top;
     int box = 15;
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
     box = 15 * scale;
 
     RECT boxRc{rect_.left, rect_.top + (h - box) / 2, rect_.left + box,
@@ -215,8 +245,7 @@ void ComboBox::setDisabledItems(const std::vector<std::string>& names) {
 }
 
 void ComboBox::paint(HDC dc) {
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
     COLORREF border = hover_ && enabled_ ? theme().border2 : theme().border;
     HBRUSH brush = CreateSolidBrush(theme().card);
     HPEN pen = CreatePen(PS_SOLID, 1, border);
@@ -360,9 +389,23 @@ void TextView::appendLine(const std::string& text) {
     ensureVisible();
 }
 
+void TextView::setPartial(const std::string& text) {
+    partialUtf8_ = text;
+    partial_ = toWide(text);
+    ensureVisible();
+}
+
+void TextView::clearPartial() {
+    partial_.clear();
+    partialUtf8_.clear();
+    ensureVisible();
+}
+
 void TextView::clear() {
     lines_.clear();
     linesW_.clear();
+    partial_.clear();
+    partialUtf8_.clear();
     scroll_ = 0;
     contentHeight_ = 0;
 }
@@ -377,7 +420,8 @@ std::string TextView::text() const {
 }
 
 void TextView::ensureVisible() {
-    contentHeight_ = static_cast<int>(lines_.size()) * lineHeight_;
+    int total = static_cast<int>(lines_.size()) + (partial_.empty() ? 0 : 1);
+    contentHeight_ = total * lineHeight_;
     int viewH = rect_.bottom - rect_.top;
     if (contentHeight_ > viewH) {
         scroll_ = contentHeight_ - viewH;
@@ -391,7 +435,6 @@ void TextView::paint(HDC dc) {
     FillRect(dc, &rect_, bg);
     DeleteObject(bg);
 
-    int viewH = rect_.bottom - rect_.top;
     int first = scroll_ / lineHeight_;
     if (first < 0) first = 0;
     int y = rect_.top - (scroll_ % lineHeight_);
@@ -402,7 +445,11 @@ void TextView::paint(HDC dc) {
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         y += lineHeight_;
     }
-    (void)viewH;
+    if (!partial_.empty() && y < rect_.bottom) {
+        RECT lineRc{rect_.left + 8, y, rect_.right - 8, y + lineHeight_};
+        drawText(dc, partial_, lineRc, faint_, font_,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
 }
 
 // ---------------------------------------------------------------- ScrollBar

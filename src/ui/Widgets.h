@@ -36,6 +36,8 @@ public:
     bool isHover() const { return hover_; }
     void setRadius(int r) { radius_ = r; }
     void setAnchorLeft(bool v) { anchorLeft_ = v; }
+    // 只画齿轮图标（不画文字），用于品牌区右上角的设置入口
+    void setDrawGear(bool v) { drawGear_ = v; }
 
 private:
     RECT rect_{0, 0, 0, 0};
@@ -47,6 +49,7 @@ private:
     bool pressed_ = false;
     bool visible_ = true;
     bool anchorLeft_ = false;
+    bool drawGear_ = false;
     int radius_ = 8;
     HFONT font_ = nullptr;
     std::function<void()> onClick_;
@@ -124,6 +127,9 @@ public:
     void paint(HDC dc);
     void append(const std::string& text);
     void appendLine(const std::string& text);
+    // 临时行：渲染在最后一条之后，下一次 setPartial/appendLine/clearPartial 时替换或消失
+    void setPartial(const std::string& text);
+    void clearPartial();
     void clear();
     void setScroll(int pos) { scroll_ = pos; }
     int scroll() const { return scroll_; }
@@ -142,10 +148,13 @@ private:
     RECT rect_{0, 0, 0, 0};
     std::vector<std::string> lines_;
     std::vector<std::wstring> linesW_;
+    std::wstring partial_;
+    std::string partialUtf8_;
     int scroll_ = 0;
     int contentHeight_ = 0;
     int lineHeight_ = 22;
     COLORREF fg_ = RGB(0xE8, 0xF0, 0xEC);
+    COLORREF faint_ = RGB(0x7A, 0x8C, 0x85);
     COLORREF bg_ = RGB(0x11, 0x1B, 0x17);
     HFONT font_ = nullptr;
     int width_ = 0;

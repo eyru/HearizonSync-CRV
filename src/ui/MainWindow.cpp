@@ -12,6 +12,8 @@
 #include "core/Util.h"
 #include "platform/Tray.h"
 #include "platform/Updater.h"
+#include "ui/Eggs.h"
+#include "ui/SettingsWindow.h"
 
 namespace hs {
 
@@ -23,6 +25,9 @@ const int kSidebarWidth = 252;
 const int kSidebarPad = 16;
 const int kStatusHeight = 30;
 const int kPanelGap = 8;
+// 窗口最小客户区：再小侧栏就摆不下了（逻辑像素，实际按 DPI 缩放）
+const int kMinClientW = 620;
+const int kMinClientH = 640;
 }  // namespace
 
 MainWindow::MainWindow() {
@@ -49,15 +54,48 @@ bool MainWindow::create(HINSTANCE hInst) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
     wc.lpszClassName = kWindowClass;
-    wc.hIcon = LoadIconW(hInst, L"APPICON");
-    wc.hIconSm = wc.hIcon;
+    // 大小图标分开取：LoadIcon 给的是系统尺寸，高 DPI 下会糊，改用 LoadImage 指定边长
+    wc.hIcon = appIcon(GetSystemMetrics(SM_CXICON), false);
+    wc.hIconSm = appIcon(GetSystemMetrics(SM_CXSMICON), false);
+    if (!wc.hIcon) wc.hIcon = LoadIconW(hInst, L"APPICON");
+    if (!wc.hIconSm) wc.hIconSm = wc.hIcon;
     if (!RegisterClassExW(&wc)) return false;
 
     Config& c = config();
-    int w = c.windowW > 0 ? c.windowW : 1180;
-    int h = c.windowH > 0 ? c.windowH : 780;
-    int x = c.windowX >= 0 ? c.windowX : CW_USEDEFAULT;
-    int y = c.windowY >= 0 ? c.windowY : CW_USEDEFAULT;
+    const double sys = Dpi::systemScale();
+    auto logical = [sys](int v) { return static_cast<int>(v * sys + 0.5); };
+
+    // 恢复尺寸：只认「普通状态」的矩形，最大化/最小化时的尺寸不能当窗口大小用
+    const bool noSavedSize = (c.windowW <= 0 || c.windowH <= 0);
+    int w = (c.windowW > 0) ? c.windowW : logical(1180);
+    int h = (c.windowH > 0) ? c.windowH : logical(840);
+    bool wantMax = c.windowMaximized;
+
+    // 旧配置里存的是物理像素，高 DPI 下可能小到放不下侧栏，这里兜底放大
+    if (w < logical(kMinClientW)) w = logical(kMinClientW);
+    if (h < logical(kMinClientH)) h = logical(kMinClientH);
+
+    // 外框不能超出工作区，否则底部按钮会跑到屏幕外
+    RECT wa{};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
+        RECT box{0, 0, w, h};
+        AdjustWindowRectEx(&box, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        int outerH = box.bottom - box.top;
+        int outerW = box.right - box.left;
+        int maxH = (wa.bottom - wa.top) - logical(8);
+        int maxW = (wa.right - wa.left) - logical(8);
+        if (outerH > maxH) h -= (outerH - maxH);
+        if (outerW > maxW) w -= (outerW - maxW);
+    }
+
+    // 位置：有记录就沿用，但要确保窗口标题栏还在屏幕内
+    int x = (c.windowX >= 0) ? c.windowX : CW_USEDEFAULT;
+    int y = (c.windowY >= 0) ? c.windowY : CW_USEDEFAULT;
+    if (c.windowX >= 0 && wa.right > wa.left) {
+        const int margin = logical(80);
+        if (x < wa.left - margin || x > wa.right - margin) x = CW_USEDEFAULT;
+        if (y < wa.top - margin || y > wa.bottom - margin) y = CW_USEDEFAULT;
+    }
 
     std::wstring title = toWide(std::string(str::kAppTitle) + " v" + appVersion());
     hwnd_ = CreateWindowExW(0, kWindowClass, title.c_str(),
@@ -66,6 +104,40 @@ bool MainWindow::create(HINSTANCE hInst) {
     if (!hwnd_) return false;
 
     Dpi::update(hwnd_);
+
+    // 首次运行没有保存过尺寸：按真实 DPI 重算一遍默认尺寸。
+    // 建窗口时用的 systemScale 在部分环境下读到的是 96，会把界面压小一圈。
+    if (noSavedSize) {
+        const double ui = Dpi::uiScale();
+        int dw = static_cast<int>(1180 * ui + 0.5);
+        int dh = static_cast<int>(840 * ui + 0.5);
+        HMONITOR mon = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(mon, &mi)) {
+            RECT box{0, 0, dw, dh};
+            AdjustWindowRectEx(&box, WS_OVERLAPPEDWINDOW, FALSE, 0);
+            int outerW = box.right - box.left;
+            int outerH = box.bottom - box.top;
+            int availW = (mi.rcWork.right - mi.rcWork.left) - static_cast<int>(8 * ui);
+            int availH = (mi.rcWork.bottom - mi.rcWork.top) - static_cast<int>(8 * ui);
+            if (outerW > availW) dw -= (outerW - availW);
+            if (outerH > availH) dh -= (outerH - availH);
+        }
+        SetWindowPos(hwnd_, nullptr, 0, 0, dw, dh, SWP_NOZORDER | SWP_NOMOVE);
+    }
+
+    if (wantMax) ShowWindow(hwnd_, SW_MAXIMIZE);
+
+    // 高 DPI 下按实际 DPI 重新取图标，任务栏和 Alt+Tab 才不会糊
+    {
+        const int big = GetSystemMetrics(SM_CXICON);
+        const int small = GetSystemMetrics(SM_CXSMICON);
+        HICON hi = appIcon(big, false);
+        HICON lo = appIcon(small, false);
+        if (hi) SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hi));
+        if (lo) SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(lo));
+    }
 
     // 业务对象
     recognizer_ = std::make_unique<Recognizer>();
@@ -88,6 +160,15 @@ bool MainWindow::create(HINSTANCE hInst) {
 
     // 启动后 4 秒检查更新
     SetTimer(hwnd_, kTimerUpdate, 4000, nullptr);
+
+    // 首次运行：半秒后弹一次引导（窗口先画出来，不让用户看着空白）
+    {
+        std::string flag = joinPath(userHome(), ".hearizon_sync_seen");
+        if (!fileExists(flag)) {
+            writeTextFile(flag, "seen");
+            SetTimer(hwnd_, kTimerWelcome, 500, nullptr);
+        }
+    }
 
     return true;
 }
@@ -115,11 +196,23 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     }
     if (!self) self = g_mainWindow;
     if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
+    if (msg == WM_GETMINMAXINFO) Dpi::update(hwnd);
     return self->handleMessage(msg, wp, lp);
 }
 
 LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_GETMINMAXINFO: {
+            // 窗口再小侧栏就会挤在一起，这里划死下限
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+            const UiScale scale{Dpi::uiScale()};
+            RECT box{0, 0, kMinClientW * scale, kMinClientH * scale};
+            AdjustWindowRectEx(&box, WS_OVERLAPPEDWINDOW, FALSE, 0);
+            mmi->ptMinTrackSize.x = box.right - box.left;
+            mmi->ptMinTrackSize.y = box.bottom - box.top;
+            return 0;
+        }
+
         case WM_CREATE:
             return 0;
 
@@ -187,13 +280,18 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_DESTROY: {
+            // 用 WINDOWPLACEMENT 保存：最大化时记的是还原后的尺寸，
+            // 否则下次会把「最大化尺寸」当普通尺寸恢复，越开越大
             Config& c = config();
-            RECT rc;
-            if (GetWindowRect(hwnd_, &rc)) {
-                c.windowX = rc.left;
-                c.windowY = rc.top;
-                c.windowW = rc.right - rc.left;
-                c.windowH = rc.bottom - rc.top;
+            WINDOWPLACEMENT wp{};
+            wp.length = sizeof(wp);
+            if (GetWindowPlacement(hwnd_, &wp)) {
+                c.windowMaximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+                const RECT& r = wp.rcNormalPosition;
+                c.windowX = r.left;
+                c.windowY = r.top;
+                c.windowW = r.right - r.left;
+                c.windowH = r.bottom - r.top;
                 saveConfig();
             }
             KillTimer(hwnd_, kTimerPump);
@@ -203,9 +301,17 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        case WM_APP + 2:   // GPU 探测完成
+            onGpuProbeDone();
+            return 0;
+
         case WM_APP + 1:   // 来自其他线程的刷新请求
             pumpUiMessages();
             InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+
+        case TrayIcon::kTrayMessage:   // 托盘图标事件
+            if (tray_) tray_->handleMessage(wp, lp);
             return 0;
 
         case WM_CTLCOLORSTATIC:
@@ -220,8 +326,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------------------------------------------------------- 控件初始化
 void MainWindow::initWidgets() {
     Config& c = config();
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
 
     HFONT ui9 = uiFont(Dpi::fontPt(9));
     HFONT ui8 = uiFont(Dpi::fontPt(8));
@@ -292,19 +397,33 @@ void MainWindow::initWidgets() {
         const char* text;
     };
     BtnDef defs[] = {
-        {&btnTestMic_, str::kTestMic},   {&btnSave_, str::kSaveRecord},
-        {&btnExport_, str::kExportSrt},  {&btnClear_, str::kClearSubtitle},
-        {&btnTray_, str::kMinimizeToTray}, {&btnAbout_, str::kAbout},
-        {&btnRefresh_, str::kRefreshDevice},
+        {&btnTestMic_, str::kTestMic},     {&btnSave_, str::kSaveRecord},
+        {&btnExport_, str::kExportSrt},    {&btnClear_, str::kClearSubtitle},
+        {&btnSettings_, str::kSettings},   {&btnTray_, str::kMinimizeToTray},
+        {&btnAbout_, str::kAbout},         {&btnRefresh_, str::kRefreshDevice},
         {&btnPosBottom_, str::kPositionBottom},
         {&btnPosTop_, str::kPositionTop},
     };
     for (auto& d : defs) {
         d.b->setText(d.text);
         d.b->setFont(ui8);
-        d.b->setColors(theme().sidebar, theme().card, theme().text2);
+        d.b->setColors(theme().card, theme().cardHover, theme().text2);
         d.b->setRadius(7 * scale);
         d.b->setAnchorLeft(true);
+    }
+
+    // 品牌区设置齿轮（圆角小方块，只放一个图标字符）
+    // 矢量绘制齿轮：字体里的 U+2699 在小尺寸下糊成一团
+    btnGear_.setText("");
+    btnGear_.setDrawGear(true);
+    btnGear_.setColors(theme().sidebar, theme().cardHover, theme().dim);
+    btnGear_.setRadius(8 * scale);
+    btnGear_.setAnchorLeft(false);
+    btnGear_.setOnClick([this]() { openSettings(); });
+    // 动作按钮两列排布，文字居中更整齐
+    for (Button* b : {&btnTestMic_, &btnSave_, &btnExport_, &btnClear_, &btnSettings_,
+                      &btnTray_}) {
+        b->setAnchorLeft(false);
     }
     btnAbout_.setColors(theme().sidebar, theme().card, theme().dim);
     btnAbout_.setAnchorLeft(false);
@@ -317,8 +436,10 @@ void MainWindow::initWidgets() {
     btnTray_.setOnClick([this]() { minimizeToTray(); });
     btnAbout_.setOnClick([this]() { openAbout(); });
     btnRefresh_.setOnClick([this]() { refreshDevices(); });
+    btnSettings_.setOnClick([this]() { openSettings(); });
     btnPosBottom_.setOnClick([this]() { onPositionChanged(false); });
     btnPosTop_.setOnClick([this]() { onPositionChanged(true); });
+    updatePosButtons();
 
     // 配色
     themeBox_.setFont(ui9);
@@ -368,7 +489,10 @@ void MainWindow::initWidgets() {
                 PostMessageW(hwnd_, WM_CLOSE, 0, 0);
             }
         });
-        tray_->start(hwnd_, idle, live, tip);
+        if (!tray_->start(hwnd_, idle, live, tip)) {
+            // 与 Python 版一致：「托盘不可用：{原因}」
+            setStatus(std::string(str::kTrayUnavailable) + "系统通知区域不可用", theme().yellow);
+        }
     }
 }
 
@@ -376,12 +500,19 @@ void MainWindow::initWidgets() {
 void MainWindow::layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
 
     int sidebarW = kSidebarWidth * scale;
     rcSidebar_ = {0, 0, sidebarW, rc.bottom};
     rcStatus_ = {0, rc.bottom - kStatusHeight * scale, rc.right, rc.bottom};
+
+    // 品牌区设置齿轮：贴侧栏右上角
+    {
+        const int gs = 26 * scale;
+        const int gx = sidebarW - kSidebarPad * scale - gs;
+        const int gy = 18 * scale;
+        btnGear_.setRect({gx, gy, gx + gs, gy + gs});
+    }
 
     int contentLeft = sidebarW;
     int contentW = rc.right - contentLeft;
@@ -405,64 +536,127 @@ void MainWindow::layout() {
     dstScroll_.setRect({rcDstPanel_.right - pad - 8 * scale, rcDstPanel_.top + headH,
                         rcDstPanel_.right - pad, rcDstPanel_.bottom - pad});
 
-    // 侧栏控件
-    int y = 118 * scale;
+    // 侧栏：先按自然尺寸算高度；放不下就逐档压缩，压到极限仍放不下则改为滚动
     int left = kSidebarPad * scale;
     int w = sidebarW - left * 2;
-    int h = 34 * scale;
-    int gap = 8 * scale;
+    sideTop_ = 112 * scale;
 
-    auto place = [&](ComboBox& box, int height) {
-        box.setRect({left, y, left + w, y + height});
-        y += height + gap;
+    struct Metrics {
+        int labelH, labelGap, comboH, itemGap, gpuRow, btnH, btnGap, posRow, themeH;
+    };
+    auto metricsFor = [](double k) {
+        auto q = [k](int v, int lo) {
+            int r = static_cast<int>(v * k + 0.5);
+            return r < lo ? lo : r;
+        };
+        Metrics m;
+        m.labelH = q(16, 12);
+        m.labelGap = q(4, 3);
+        m.comboH = q(30, 22);
+        m.itemGap = q(7, 3);
+        m.gpuRow = q(22, 16);
+        m.btnH = q(27, 20);
+        m.btnGap = q(6, 5);
+        m.posRow = q(24, 18);
+        m.themeH = q(28, 22);
+        return m;
     };
 
-    inLangBox_.setRect({left, y, left + w, y + h});
-    y += h + gap;
-    deviceBox_.setRect({left, y, left + w, y + h});
-    y += h + gap;
-    targetLangBox_.setRect({left, y, left + w, y + h});
-    y += h + gap;
-    modeBox_.setRect({left, y, left + w, y + h});
-    y += h + gap;
-    apiEngineBox_.setRect({left, y, left + w, y + h});
-    y += h + gap;
-    engineBox_.setRect({left, y, left + w, y + h});
-    y += h + gap + 4 * scale;
+    int startH = 44 * scale;
+    int startTop = rcStatus_.top - startH - 12 * scale;
+    int bottomLimit = startTop - 8 * scale;
+    sideBottom_ = bottomLimit;
 
-    // GPU + 刷新设备
-    gpuCheck_.setRect({left, y, left + 100 * scale, y + 24 * scale});
-    btnRefresh_.setRect({left + w - 64 * scale, y, left + w, y + 24 * scale});
-    y += 24 * scale + gap;
+    // 摆一遍（apply=false 只量高度），off 为滚动偏移，返回内容结束位置
+    auto runSidebar = [&](const Metrics& m, bool apply, int off) {
+        int y = sideTop_ + off;
+        auto comboAt = [&](ComboBox& b) {
+            int t = y + m.labelH * scale + m.labelGap * scale;
+            if (apply) b.setRect({left, t, left + w, t + m.comboH * scale});
+            y = t + m.comboH * scale + m.itemGap * scale;
+        };
+        comboAt(inLangBox_);
+        comboAt(deviceBox_);
+        comboAt(targetLangBox_);
+        comboAt(modeBox_);
+        comboAt(apiEngineBox_);
+        comboAt(engineBox_);
 
-    // 自动纠错
-    correctCheck_.setRect({left, y, left + w, y + 24 * scale});
-    y += 24 * scale + gap + 6 * scale;
+        y += 2 * scale;
+        if (apply) {
+            gpuCheck_.setRect({left, y, left + 110 * scale, y + m.gpuRow * scale});
+            btnRefresh_.setRect({left + w - 66 * scale, y, left + w, y + m.gpuRow * scale});
+        }
+        y += m.gpuRow * scale + m.itemGap * scale;
 
-    // 操作按钮
-    int btnH = 30 * scale;
-    for (Button* b : {&btnTestMic_, &btnSave_, &btnExport_, &btnClear_, &btnTray_}) {
-        b->setRect({left - 4 * scale, y, left + w + 4 * scale, y + btnH});
-        y += btnH + 2 * scale;
+        if (apply) correctCheck_.setRect({left, y, left + w, y + m.gpuRow * scale});
+        y += m.gpuRow * scale + m.itemGap * scale + 6 * scale;
+
+        // 动作按钮：两列三行，比单列省一半高度
+        {
+            const int colGap = 6, gap = 0;
+            int colGapPx = colGap * scale;
+            int colW = (w - colGapPx) / 2;
+            Button* cells[6] = {&btnTestMic_, &btnSave_, &btnExport_, &btnClear_,
+                                &btnSettings_, &btnTray_};
+            for (int i = 0; i < 6; ++i) {
+                int col = i % 2, row = i / 2;
+                int bx = left + col * (colW + colGapPx);
+                int by = y + row * (m.btnH + m.btnGap) * scale;
+                if (apply) {
+                    cells[i]->setRect({bx, by, bx + colW, by + m.btnH * scale});
+                }
+            }
+            (void)gap;
+            y += 3 * (m.btnH + m.btnGap) * scale;
+        }
+        // 分隔线在「字幕位置」标签之上，且留足标签高度，避免压字
+        y += 5 * scale;
+        if (apply) dividerY_ = y;
+        y += 10 * scale;
+        y += (m.labelH + m.labelGap) * scale;
+
+        int halfW = (w - 6 * scale) / 2;
+        if (apply) {
+            btnPosBottom_.setRect({left, y, left + halfW, y + m.posRow * scale});
+            btnPosTop_.setRect({left + halfW + 6 * scale, y, left + w, y + m.posRow * scale});
+        }
+        y += m.posRow * scale + (m.labelH + m.labelGap * 2) * scale;
+
+        if (apply) themeBox_.setRect({left, y, left + w, y + m.themeH * scale});
+        y += m.themeH * scale;
+        return y;
+    };
+
+    Metrics m = metricsFor(1.0);
+    int end = runSidebar(m, false, 0);
+    for (double k = 0.95; end > bottomLimit && k >= 0.75 - 1e-9; k -= 0.05) {
+        m = metricsFor(k);
+        end = runSidebar(m, false, 0);
     }
-    y += 8 * scale;
+    labelH_ = m.labelH * scale;
+    labelGap_ = m.labelGap * scale;
 
-    // 字幕样式
-    int halfW = (w - 6 * scale) / 2;
-    btnPosBottom_.setRect({left, y, left + halfW, y + 24 * scale});
-    btnPosTop_.setRect({left + halfW + 6 * scale, y, left + w, y + 24 * scale});
-    y += 24 * scale + gap;
-    themeBox_.setRect({left, y, left + w, y + 28 * scale});
-    y += 28 * scale + gap;
+    // 压到极限仍放不下：改成滚动，不重叠
+    int avail = bottomLimit - sideTop_;
+    int full = end - sideTop_;
+    sideMax_ = full > avail ? full - avail : 0;
+    bool changed = false;
+    if (sideScroll_ > sideMax_) { sideScroll_ = sideMax_; changed = true; }
+    if (sideScroll_ < 0) { sideScroll_ = 0; changed = true; }
+    (void)changed;
+    runSidebar(m, true, -sideScroll_);
 
     // 开始按钮（底部固定）
-    int startH = 44 * scale;
-    btnStart_.setRect({left - 4 * scale, rcStatus_.top - startH - 12 * scale,
-                       left + w + 4 * scale, rcStatus_.top - 12 * scale});
+    btnStart_.setRect({left - 4 * scale, startTop, left + w + 4 * scale,
+                       rcStatus_.top - 12 * scale});
 
     // 关于按钮（状态栏右侧）
     btnAbout_.setRect({rc.right - 70 * scale, rcStatus_.top + 4 * scale,
                        rc.right - 8 * scale, rcStatus_.bottom - 4 * scale});
+    // 版本号（连点彩蛋）
+    rcVersion_ = {rc.right - 70 * scale - 96 * scale, rcStatus_.top,
+                  rc.right - 70 * scale - 4 * scale, rcStatus_.bottom};
 }
 
 // ---------------------------------------------------------------- 绘制
@@ -484,21 +678,48 @@ void MainWindow::paint(HDC dc) {
 }
 
 void MainWindow::paintSidebar(HDC dc) {
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
 
     HBRUSH sb = CreateSolidBrush(theme().sidebar);
     FillRect(dc, &rcSidebar_, sb);
     DeleteObject(sb);
 
     int left = kSidebarPad * scale;
-    int y = 18 * scale;
+    int y = 16 * scale;
 
-    // 标题
-    RECT titleRc{left, y, rcSidebar_.right - left, y + 30 * scale};
-    drawText(dc, toWide("Hearizon Sync"), titleRc, theme().text,
-             uiFont(Dpi::fontPt(15), true), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    y += 34 * scale;
+    // 品牌区：logo + 标题 + 副标题（与 Python 版一致）
+    {
+        const int logoPx = 32 * scale;
+        HICON logo = appIcon(logoPx, false);
+        if (logo) {
+            DrawIconEx(dc, left, y + 2 * scale, logo, logoPx, logoPx, 0, nullptr,
+                       DI_NORMAL);
+        } else {
+            // 资源缺失时退化成圆点，不塌成空白
+            HBRUSH fb = CreateSolidBrush(theme().accent);
+            HPEN fp = CreatePen(PS_SOLID, 1, theme().accent);
+            HBRUSH ob = static_cast<HBRUSH>(SelectObject(dc, fb));
+            HPEN op = static_cast<HPEN>(SelectObject(dc, fp));
+            Ellipse(dc, left + 2 * scale, y + 4 * scale, left + logoPx - 2 * scale,
+                    y + logoPx - 2 * scale);
+            SelectObject(dc, ob);
+            SelectObject(dc, op);
+            DeleteObject(fb);
+            DeleteObject(fp);
+        }
+
+        const int textX = left + logoPx + 9 * scale;
+        RECT nameRc{textX, y, rcSidebar_.right - left, y + 20 * scale};
+        drawText(dc, toWide(str::kAppTitle), nameRc, theme().text,
+                 uiFont(Dpi::fontPt(11), true), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT tagRc{textX, y + 18 * scale, rcSidebar_.right - left, y + 34 * scale};
+        drawText(dc, toWide(str::kSidebarTagline), tagRc, theme().faint,
+                 uiFont(Dpi::fontPt(8)), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // 设置齿轮：品牌区右上角，与 Python 版一致（这里能直接进填 API Key 的设置页）
+    btnGear_.paint(dc, rcSidebar_);
+    y += 44 * scale;
 
     // 状态点 + 文字
     RECT dotRc{left, y + 6 * scale, left + 7 * scale, y + 13 * scale};
@@ -533,20 +754,23 @@ void MainWindow::paintSidebar(HDC dc) {
     SelectObject(dc, oldLine);
     DeleteObject(line);
 
-    // 各字段标签
-    auto label = [&](const char* text, int ly) {
-        RECT lr{left, ly, rcSidebar_.right - left, ly + 14 * scale};
+    // 可滚动区域：标题与状态不随滚动移动，避免与内容重叠
+    int savedDc = SaveDC(dc);
+    IntersectClipRect(dc, 0, sideTop_, rcSidebar_.right, rcStatus_.top);
+
+    // 各字段标签（位置从控件矩形推导，改布局也不会错位）
+    auto labelAbove = [&](const char* text, const RECT& box) {
+        RECT lr{box.left, box.top - labelGap_ - labelH_, rcSidebar_.right - box.left,
+                box.top - labelGap_};
         drawText(dc, toWide(text), lr, theme().dim, uiFont(Dpi::fontPt(8)),
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     };
-
-    int ly = 96 * scale;
-    label(str::kInputLang, ly);
-    label(str::kAudioDevice, ly + 42 * scale);
-    label(str::kTargetLang, ly + 84 * scale);
-    label(str::kTranslateMode, ly + 126 * scale);
-    label(str::kApiEngine, ly + 168 * scale);
-    label(str::kAsrEngine, ly + 210 * scale);
+    labelAbove(str::kInputLang, inLangBox_.rect());
+    labelAbove(str::kAudioDevice, deviceBox_.rect());
+    labelAbove(str::kTargetLang, targetLangBox_.rect());
+    labelAbove(str::kTranslateMode, modeBox_.rect());
+    labelAbove(str::kApiEngine, apiEngineBox_.rect());
+    labelAbove(str::kAsrEngine, engineBox_.rect());
 
     // 控件
     inLangBox_.paint(dc);
@@ -559,28 +783,58 @@ void MainWindow::paintSidebar(HDC dc) {
     correctCheck_.paint(dc);
 
     for (Button* b : {&btnRefresh_, &btnTestMic_, &btnSave_, &btnExport_, &btnClear_,
-                      &btnTray_, &btnPosBottom_, &btnPosTop_}) {
+                      &btnSettings_, &btnTray_, &btnPosBottom_, &btnPosTop_}) {
         b->paint(dc, rcSidebar_);
     }
 
-    // 字幕样式标题
-    RECT styleRc{left, themeBox_.rect().top - 26 * scale, rcSidebar_.right - left,
-                 themeBox_.rect().top - 10 * scale};
-    drawText(dc, toWide(str::kSubtitleStyle), styleRc, theme().dim,
-             uiFont(Dpi::fontPt(8)), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    // 字幕分区：分隔线 + 标签，标签位置全部由控件矩形推导
+    if (dividerY_ > 0) {
+        HPEN dl = CreatePen(PS_SOLID, 1, theme().border);
+        HPEN oldDl = static_cast<HPEN>(SelectObject(dc, dl));
+        MoveToEx(dc, left, dividerY_, nullptr);
+        LineTo(dc, rcSidebar_.right - left, dividerY_);
+        SelectObject(dc, oldDl);
+        DeleteObject(dl);
+    }
+    labelAbove(str::kPosition, btnPosBottom_.rect());
+    labelAbove(str::kTheme, themeBox_.rect());
     themeBox_.paint(dc);
+
+    RestoreDC(dc, savedDc);
+
+    // 侧栏滚动条（仅内容超高时出现）
+    if (sideMax_ > 0) {
+        int sw = 4 * scale;
+        if (sw < 3) sw = 3;
+        int sx = rcSidebar_.right - sw - 2 * scale;
+        int bandH = sideBottom_ - sideTop_;
+        HBRUSH track = CreateSolidBrush(theme().border);
+        RECT tr{sx, sideTop_, sx + sw, sideBottom_};
+        FillRect(dc, &tr, track);
+        DeleteObject(track);
+
+        int full = bandH + sideMax_;
+        int thumbH = bandH * bandH / (full > 0 ? full : 1);
+        if (thumbH < 24 * scale) thumbH = 24 * scale;
+        int travel = bandH - thumbH;
+        int ty = sideTop_;
+        if (sideMax_ > 0) ty += travel * sideScroll_ / sideMax_;
+        HBRUSH thumb = CreateSolidBrush(theme().border2);
+        RECT hr{sx, ty, sx + sw, ty + thumbH};
+        FillRect(dc, &hr, thumb);
+        DeleteObject(thumb);
+    }
 
     // 开始按钮
     btnStart_.paint(dc, rcSidebar_);
 }
 
 void MainWindow::paintPanels(HDC dc) {
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
     const SubTheme& st = subThemeByIndex(themeIndex_);
 
     auto paintPanel = [&](const RECT& rc, const char* title, COLORREF dotColor,
-                          TextView& view, ScrollBar& bar) {
+                          TextView& view, ScrollBar& bar, const char* placeholder) {
         HBRUSH bg = CreateSolidBrush(theme().panel);
         HPEN pen = CreatePen(PS_SOLID, 1, theme().border);
         HBRUSH oldB = static_cast<HBRUSH>(SelectObject(dc, bg));
@@ -610,17 +864,25 @@ void MainWindow::paintPanels(HDC dc) {
         drawText(dc, toWide(title), titleRc, theme().dim, uiFont(Dpi::fontPt(9)),
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+        // 空状态：没有内容时给一句引导，而不是一片空白
+        if (view.text().empty()) {
+            RECT pr{rc.left + pad, rc.top + 44 * scale, rc.right - pad, rc.bottom - pad};
+            drawText(dc, toWide(placeholder), pr, theme().faint, uiFont(Dpi::fontPt(9)),
+                     DT_CENTER | DT_TOP | DT_WORDBREAK);
+        }
+
         view.paint(dc);
         bar.paint(dc);
     };
 
-    paintPanel(rcSrcPanel_, str::kSourceTitle, st.srcFg, srcView_, srcScroll_);
-    paintPanel(rcDstPanel_, str::kTargetTitle, st.dstFg, dstView_, dstScroll_);
+    paintPanel(rcSrcPanel_, str::kSourceTitle, st.srcFg, srcView_, srcScroll_,
+               str::kSrcPlaceholder);
+    paintPanel(rcDstPanel_, str::kTargetTitle, st.dstFg, dstView_, dstScroll_,
+               str::kDstPlaceholder);
 }
 
 void MainWindow::paintStatusBar(HDC dc) {
-    int scale = static_cast<int>(Dpi::scale() + 0.5);
-    if (scale < 1) scale = 1;
+    const UiScale scale{Dpi::uiScale()};
 
     HBRUSH sb = CreateSolidBrush(theme().sidebar);
     FillRect(dc, &rcStatus_, sb);
@@ -638,10 +900,13 @@ void MainWindow::paintStatusBar(HDC dc) {
     long long dur = startTick_ ? (GetTickCount() - startTick_) / 1000 : 0;
     std::snprintf(buf, sizeof(buf), "句数 %lld   字数 %lld   时长 %02lld:%02lld",
                   sentences_, charsIn_, dur / 60, dur % 60);
-    RECT statRc{rcStatus_.left + 14 * scale, rcStatus_.top, rcStatus_.right - 80 * scale,
+    RECT statRc{rcStatus_.left + 14 * scale, rcStatus_.top, rcVersion_.left - 6 * scale,
                 rcStatus_.bottom};
     drawText(dc, toWide(buf), statRc, theme().faint, uiFont(Dpi::fontPt(8)),
-             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    drawText(dc, toWide(std::string("v") + appVersion()), rcVersion_, theme().faint,
+             uiFont(Dpi::fontPt(8)), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     btnAbout_.paint(dc, rcStatus_);
 }
@@ -666,9 +931,9 @@ void MainWindow::onMouseMove(int x, int y) {
     themeBox_.onMouseMove(x, y);
     gpuCheck_.onMouseMove(x, y);
     correctCheck_.onMouseMove(x, y);
-    for (Button* b : {&btnStart_, &btnTestMic_, &btnSave_, &btnExport_, &btnClear_,
-                      &btnTray_, &btnAbout_, &btnRefresh_, &btnPosBottom_,
-                      &btnPosTop_}) {
+    for (Button* b : {&btnStart_, &btnGear_, &btnTestMic_, &btnSave_, &btnExport_,
+                      &btnClear_, &btnSettings_, &btnTray_, &btnAbout_, &btnRefresh_,
+                      &btnPosBottom_, &btnPosTop_}) {
         b->onMouseMove(x, y);
     }
     srcScroll_.onMouseMove(x, y);
@@ -697,8 +962,13 @@ void MainWindow::onMouseDown(int x, int y) {
         return;
     }
 
-    // 标题栏拖动（顶部 34px 空白区）
-    if (y < 34 * static_cast<int>(Dpi::scale() + 0.5)) {
+    // 品牌区按钮的命中优先级高于标题栏拖动，否则齿轮/关于被拖动区吞掉
+    if (btnGear_.onMouseDown(x, y)) return;
+    if (btnAbout_.onMouseDown(x, y)) return;
+    if (btnStart_.onMouseDown(x, y)) return;
+
+    // 标题栏拖动（顶部 34 逻辑像素空白区）
+    if (y < 34 * Dpi::uiScale()) {
         dragging_ = true;
         dragStart_ = {x, y};
         RECT wr;
@@ -707,11 +977,15 @@ void MainWindow::onMouseDown(int x, int y) {
         return;
     }
 
+
+    // 侧栏控件只在其可视带内响应（滚动后超出的部分不可点）
+    if (y < sideTop_ || y >= sideBottom_) return;
+
     gpuCheck_.onMouseDown(x, y);
     correctCheck_.onMouseDown(x, y);
-    for (Button* b : {&btnStart_, &btnTestMic_, &btnSave_, &btnExport_, &btnClear_,
-                      &btnTray_, &btnAbout_, &btnRefresh_, &btnPosBottom_,
-                      &btnPosTop_}) {
+    for (Button* b : {&btnTestMic_, &btnSave_, &btnExport_, &btnClear_,
+                      &btnSettings_, &btnTray_, &btnRefresh_,
+                      &btnPosBottom_, &btnPosTop_}) {
         b->onMouseDown(x, y);
     }
 }
@@ -722,49 +996,21 @@ void MainWindow::onMouseUp(int x, int y) {
         return;
     }
 
+    // 注意：Button::onMouseUp 命中时会自行执行 onClick_ 回调，
+    // 这里只做分发与提前返回，不能再重复调用业务函数。
     if (btnStart_.onMouseUp(x, y)) return;
-    if (btnTestMic_.onMouseUp(x, y)) {
-        testMic();
-        return;
-    }
-    if (btnSave_.onMouseUp(x, y)) {
-        saveRecord();
-        return;
-    }
-    if (btnExport_.onMouseUp(x, y)) {
-        exportSrt();
-        return;
-    }
-    if (btnClear_.onMouseUp(x, y)) {
-        clearSubtitles();
-        return;
-    }
-    if (btnTray_.onMouseUp(x, y)) {
-        minimizeToTray();
-        return;
-    }
-    if (btnAbout_.onMouseUp(x, y)) {
-        openAbout();
-        return;
-    }
-    if (btnRefresh_.onMouseUp(x, y)) {
-        refreshDevices();
-        return;
-    }
-    if (btnPosBottom_.onMouseUp(x, y)) {
-        subTop_ = false;
-        config().subPos = "bottom";
-        saveConfig();
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
-    if (btnPosTop_.onMouseUp(x, y)) {
-        subTop_ = true;
-        config().subPos = "top";
-        saveConfig();
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
+    if (btnAbout_.onMouseUp(x, y)) return;
+    if (btnGear_.onMouseUp(x, y)) return;
+    if (y < sideTop_ || y >= sideBottom_) return;
+    if (btnTestMic_.onMouseUp(x, y)) return;
+    if (btnSave_.onMouseUp(x, y)) return;
+    if (btnExport_.onMouseUp(x, y)) return;
+    if (btnClear_.onMouseUp(x, y)) return;
+    if (btnTray_.onMouseUp(x, y)) return;
+    if (btnRefresh_.onMouseUp(x, y)) return;
+    if (btnSettings_.onMouseUp(x, y)) return;
+    if (btnPosBottom_.onMouseUp(x, y)) return;
+    if (btnPosTop_.onMouseUp(x, y)) return;
 
     if (gpuCheck_.onMouseUp(x, y)) return;
     if (correctCheck_.onMouseUp(x, y)) return;
@@ -789,6 +1035,14 @@ void MainWindow::onMouseUp(int x, int y) {
 
 void MainWindow::onMouseWheel(int delta, int x, int y) {
     int step = delta > 0 ? -3 : 3;
+    if (x < rcSidebar_.right && y >= sideTop_ && y < rcStatus_.top && sideMax_ > 0) {
+        sideScroll_ += step * 10;
+        if (sideScroll_ > sideMax_) sideScroll_ = sideMax_;
+        if (sideScroll_ < 0) sideScroll_ = 0;
+        layout();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
     if (x >= rcSrcPanel_.left && x < rcSrcPanel_.right && y >= rcSrcPanel_.top &&
         y < rcSrcPanel_.bottom) {
         srcScroll_.setPosition(srcScroll_.position() + step * 22);
@@ -800,8 +1054,26 @@ void MainWindow::onMouseWheel(int delta, int x, int y) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::onKeyDown(WPARAM key) {
-    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+// 字号热调：译文 +-1，原文跟着减 4，范围 14..32（与 Python 版一致）
+void MainWindow::applyFontStep(int delta) {
+    int dst = subSizeDst_ + delta;
+    if (dst < 14) dst = 14;
+    if (dst > 32) dst = 32;
+    int src = dst - 4;
+    if (src < 10) src = 10;
+    if (src > 32) src = 32;
+    subSizeDst_ = dst;
+    subSizeSrc_ = src;
+    config().subSizeDst = dst;
+    config().subSizeSrc = src;
+    saveConfig();
+    layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    setStatus("字幕字号：译文 " + std::to_string(dst) + " / 原文 " + std::to_string(src),
+              theme().text2);
+}
+
+void MainWindow::onKeyDown(WPARAM key) {    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     if (ctrl && key == VK_RETURN) {
         if (running_.load())
@@ -816,14 +1088,22 @@ void MainWindow::onKeyDown(WPARAM key) {
         else
             saveRecord();
     } else if (ctrl && (key == VK_ADD || key == VK_OEM_PLUS)) {
-        subSizeDst_ = std::min(32, subSizeDst_ + 1);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        applyFontStep(1);
     } else if (ctrl && (key == VK_SUBTRACT || key == VK_OEM_MINUS)) {
-        subSizeDst_ = std::max(14, subSizeDst_ - 1);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        applyFontStep(-1);
     } else if (ctrl && key == '0') {
         subSizeDst_ = 18;
+        subSizeSrc_ = 14;
+        config().subSizeDst = subSizeDst_;
+        config().subSizeSrc = subSizeSrc_;
+        saveConfig();
+        layout();
         InvalidateRect(hwnd_, nullptr, FALSE);
+        setStatus("字幕字号已恢复默认", theme().text2);
+    } else if (ctrl && key == VK_OEM_COMMA) {
+        openSettings();
+    } else if (key == VK_F1) {
+        openAbout();
     }
 }
 
@@ -840,9 +1120,9 @@ void MainWindow::onTimer(UINT_PTR id) {
     } else if (id == kTimerUpdate) {
         KillTimer(hwnd_, kTimerUpdate);
         checkUpdateAsync();
-    } else if (id == kTimerVersionReset) {
-        KillTimer(hwnd_, kTimerVersionReset);
-        versionClicks_ = 0;
+    } else if (id == kTimerWelcome) {
+        KillTimer(hwnd_, kTimerWelcome);
+        eggs::showWelcome(hwnd_);
     }
 }
 
@@ -853,6 +1133,8 @@ void MainWindow::startCapture() {
     stopping_.store(false);
     startTick_ = GetTickCount();
     sentences_ = charsIn_ = charsOut_ = 0;
+    segments_.clear();
+    sessionStart_ = nowSeconds();
     lastSpeechTick_ = GetTickCount();
     silenceWarned_ = false;
 
@@ -940,6 +1222,14 @@ void MainWindow::onSentence(const std::vector<float>& audio) {
     }
 
     std::string ts = nowTimeString();
+
+    // 真实时间轴：音频片段时长 ≈ 说话时长，宁可早一点也不要晚
+    Segment seg;
+    seg.start = nowSeconds() - static_cast<double>(audio.size()) / kSampleRate;
+    seg.end = nowSeconds();
+    seg.src = text;
+    segments_.push_back(seg);
+
     UiMessage srcMsg;
     srcMsg.kind = UiMessage::Kind::Src;
     srcMsg.s1 = ts;
@@ -1010,11 +1300,12 @@ void MainWindow::applyMessage(const UiMessage& msg) {
             break;
 
         case UiMessage::Kind::PartialSrc:
-            // 简化：临时结果直接追加到原文（正式结果会覆盖）
-            srcView_.append(msg.s1);
+            // 临时结果单独占一行，下一句直接替换，不会堆积
+            srcView_.setPartial("… " + msg.s1);
             break;
 
         case UiMessage::Kind::Src: {
+            srcView_.clearPartial();
             std::string line = "[" + msg.s1 + "] (" + msg.s3 + ") " + msg.s2;
             srcView_.appendLine(line);
             ++sentences_;
@@ -1036,6 +1327,10 @@ void MainWindow::applyMessage(const UiMessage& msg) {
             std::string line = msg.s1;
             if (!msg.s2.empty()) line += "    — " + msg.s2;
             dstView_.appendLine(line);
+            if (!segments_.empty() && segments_.back().dst.empty()) {
+                segments_.back().dst = msg.s1;
+                segments_.back().end = nowSeconds();
+            }
             charsOut_ += static_cast<long long>(msg.s1.size());
             break;
         }
@@ -1125,6 +1420,7 @@ void MainWindow::onApiEngineChanged(int index) {
 }
 
 void MainWindow::onInputLangChanged(int index) {
+    if (running_.load()) setStatus(str::kLangChanged, theme().yellow);
     (void)index;
     std::string lang = inLangBox_.selectedText();
     if (recognizer_) {
@@ -1139,6 +1435,7 @@ void MainWindow::onInputLangChanged(int index) {
 }
 
 void MainWindow::onTargetLangChanged(int index) {
+    if (running_.load()) setStatus(str::kLangChanged, theme().yellow);
     (void)index;
 }
 
@@ -1151,22 +1448,92 @@ void MainWindow::onGpuToggled(bool on) {
     saveConfig();
     if (recognizer_) recognizer_->invalidate();
     if (translator_) translator_->invalidateLocal();
-    if (on) {
-        setStatus("已开启 GPU（下次识别重新加载模型）", theme().accent);
+    if (!on) {
+        setStatus(str::kGpuOff, theme().dim);
+        return;
+    }
+
+    // 开启前真实探测，避免「勾了却没生效」的假象
+    setStatus(str::kGpuProbing, theme().dim);
+    gpuProbePending_ = true;
+    if (gpuThread_.joinable()) gpuThread_.join();
+    HWND hwnd = hwnd_;
+    gpuThread_ = std::thread([this, hwnd] {
+        gpu::ProbeResult r = gpu::probe(opusModelDir());
+        {
+            std::lock_guard<std::mutex> lk(gpuMtx_);
+            gpuResult_ = r;
+        }
+        if (hwnd) PostMessageW(hwnd, WM_APP + 2, 0, 0);
+    });
+}
+
+void MainWindow::onGpuProbeDone() {
+    gpu::ProbeResult r;
+    {
+        std::lock_guard<std::mutex> lk(gpuMtx_);
+        r = gpuResult_;
+    }
+    gpuProbePending_ = false;
+
+    if (r.usable) {
+        config().gpuAccel = true;
+        saveConfig();
+        if (recognizer_) recognizer_->invalidate();
+        if (translator_) translator_->invalidateLocal();
+        setStatus(str::kGpuOnOk, theme().green);
+        return;
+    }
+
+    // 没成功：把开关退回关闭态，说清为什么
+    config().gpuAccel = false;
+    saveConfig();
+    gpuCheck_.setChecked(false);
+    if (recognizer_) recognizer_->invalidate();
+    if (translator_) translator_->invalidateLocal();
+    setStatus(std::string(str::kGpuFailPrefix) + r.msg, theme().yellow);
+
+    std::string body = r.msg + "\n\n";
+    if (r.hasCard) {
+        body += str::kGpuWarnBodyHasCard;
+        MessageBoxW(hwnd_, toWide(body).c_str(), toWide(str::kGpuWarnTitle).c_str(),
+                    MB_OK | MB_ICONWARNING);
     } else {
-        setStatus("已关闭 GPU，全部走 CPU", theme().dim);
+        body += str::kGpuInfoBodyNoCard;
+        MessageBoxW(hwnd_, toWide(body).c_str(), toWide(str::kGpuInfoTitle).c_str(),
+                    MB_OK | MB_ICONINFORMATION);
     }
 }
 
 void MainWindow::onCorrectToggled(bool on) {
     std::string mode = modeBox_.selectedText();
     if (on && mode != TR_API && !config().correctWarnSkip) {
-        // 弹出提醒
-        int ret = MessageBoxW(hwnd_,
-                              toWide(str::kCorrectConsumeBody).c_str(),
-                              toWide(str::kCorrectConsumeTitle).c_str(),
-                              MB_YESNO | MB_ICONWARNING);
-        if (ret != IDYES) {
+        // TaskDialog 带「不再提醒」勾选框（与 Python 版一致）
+        TASKDIALOGCONFIG cfg{};
+        cfg.cbSize = sizeof(cfg);
+        cfg.hwndParent = hwnd_;
+        cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+        cfg.pszWindowTitle = L"Hearizon Sync";
+        cfg.pszMainIcon = TD_WARNING_ICON;
+        cfg.pszMainInstruction = toWide(str::kCorrectConsumeTitle).c_str();
+        cfg.pszContent = toWide(str::kCorrectConsumeBody).c_str();
+        cfg.pszVerificationText = toWide(str::kDoNotRemind).c_str();
+        cfg.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+
+        BOOL verified = FALSE;
+        int pressed = 0;
+        if (FAILED(TaskDialogIndirect(&cfg, &pressed, nullptr, &verified))) {
+            // 极旧系统退回 MessageBox
+            int ret = MessageBoxW(hwnd_, toWide(str::kCorrectConsumeBody).c_str(),
+                                  toWide(str::kCorrectConsumeTitle).c_str(),
+                                  MB_YESNO | MB_ICONWARNING);
+            pressed = (ret == IDYES) ? IDYES : IDNO;
+        }
+        if (verified) {
+            config().correctWarnSkip = true;
+            saveConfig();
+        }
+        if (pressed != IDYES) {
             correctCheck_.setChecked(false);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
@@ -1188,11 +1555,24 @@ void MainWindow::onThemeChanged(int index) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::updatePosButtons() {
+    const Theme& t = theme();
+    auto paint = [&](Button& b, bool on) {
+        if (on)
+            b.setColors(t.accent, t.accent2, RGB(0x03, 0x21, 0x1A));
+        else
+            b.setColors(t.card, t.cardHover, t.text2);
+    };
+    paint(btnPosBottom_, !subTop_);
+    paint(btnPosTop_, subTop_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::onPositionChanged(bool top) {
     subTop_ = top;
     config().subPos = top ? "top" : "bottom";
     saveConfig();
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    updatePosButtons();
 }
 
 void MainWindow::refreshDevices() {

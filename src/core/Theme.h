@@ -56,13 +56,31 @@ public:
     static void enableAwareness();      // 进程启动时调用一次
     static void update(HWND hwnd);      // 拿到窗口后计算缩放
     static double scale();              // 1.0 = 96 DPI
+    static double uiScale();            // 同 scale()，但不小于 1.0
+    static double systemScale();        // 建窗口前用：系统 DPI 缩放，不小于 1.0
     static int sp(int px);              // 按缩放换算像素
     static int fontPt(int pt);          // 字号换算
 };
+
+// 界面缩放：写成 42 * scale 就能拿到按 DPI 缩放后四舍五入的像素值
+struct UiScale {
+    double v = 1.0;
+    operator double() const { return v; }
+};
+inline int scaledPx(double a, double v) {
+    return static_cast<int>(a * v + 0.5);
+}
+inline int operator*(double a, UiScale s) { return scaledPx(a, s.v); }
+inline int operator*(int a, UiScale s) { return scaledPx(static_cast<double>(a), s.v); }
+inline int operator*(UiScale s, double a) { return scaledPx(a, s.v); }
+inline int operator*(UiScale s, int a) { return scaledPx(static_cast<double>(a), s.v); }
 
 // 字体
 HFONT uiFont(int pt, bool bold = false);
 HFONT monoFont(int pt);
 void clearFontCache();
+
+// 程序图标（从 exe 资源读，px 为像素边长；live = true 取运行中那套图标）
+HICON appIcon(int px, bool live = false);
 
 }  // namespace hs

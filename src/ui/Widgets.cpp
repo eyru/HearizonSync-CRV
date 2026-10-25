@@ -288,6 +288,11 @@ bool ComboBox::onMouseUp(int x, int y) {
         int totalH = itemH * static_cast<int>(items_.size()) + 2;
         int px = rect_.left;
         int py = rect_.bottom + 4;
+        // 下方放不下就向上翻转，避免弹层超出窗口
+        if (boundsH_ > 0 && py + totalH > boundsH_) {
+            py = rect_.top - totalH - 4;
+            if (py < 0) py = 0;
+        }
         popupRect_ = {px, py, px + (rect_.right - rect_.left), py + totalH};
         return true;
     }

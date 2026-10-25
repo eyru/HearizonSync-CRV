@@ -96,6 +96,7 @@ public:
     bool enabled() const { return enabled_; }
     void setDisabledItems(const std::vector<std::string>& names);
     void setRect(const RECT& r) { rect_ = r; }
+    void setBoundsHeight(int h) { boundsH_ = h; }
     RECT rect() const { return rect_; }
     void setOnChange(std::function<void(int)> cb) { onChange_ = std::move(cb); }
     void setFont(HFONT f) { font_ = f; }
@@ -107,6 +108,7 @@ public:
 
 private:
     RECT rect_{0, 0, 0, 0};
+    int boundsH_ = 0;   // 父窗口客户区高度，用于弹层向上翻转
     RECT popupRect_{0, 0, 0, 0};
     std::vector<std::string> items_;
     std::vector<std::wstring> itemsW_;

@@ -648,6 +648,16 @@ void MainWindow::layout() {
     runSidebar(m, true, -sideScroll_);
 
     // 开始按钮（底部固定）
+    // 弹层翻转需要在打开时知道客户区高度
+    {
+        RECT rcCli{};
+        GetClientRect(hwnd_, &rcCli);
+        for (ComboBox* b : {&inLangBox_, &deviceBox_, &targetLangBox_, &modeBox_,
+                            &apiEngineBox_, &engineBox_, &themeBox_}) {
+            b->setBoundsHeight(rcCli.bottom);
+        }
+    }
+
     btnStart_.setRect({left - 4 * scale, startTop, left + w + 4 * scale,
                        rcStatus_.top - 12 * scale});
 
@@ -827,6 +837,9 @@ void MainWindow::paintSidebar(HDC dc) {
 
     // 开始按钮
     btnStart_.paint(dc, rcSidebar_);
+
+    // 下拉弹层必须画在所有控件之上，否则会被侧栏按钮覆盖
+    if (openPopup_) openPopup_->paintPopup(dc);
 }
 
 void MainWindow::paintPanels(HDC dc) {

@@ -1086,7 +1086,8 @@ void MainWindow::applyFontStep(int delta) {
               theme().text2);
 }
 
-void MainWindow::onKeyDown(WPARAM key) {    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+void MainWindow::onKeyDown(WPARAM key) {
+    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     if (ctrl && key == VK_RETURN) {
         if (running_.load())

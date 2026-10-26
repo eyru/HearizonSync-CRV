@@ -267,6 +267,8 @@ std::string Recognizer::applyHotwords(const std::string& text) const {
         size_t wlen = w.size();
         if (out.size() < wlen) continue;
         for (size_t i = 0; i + wlen <= out.size(); ++i) {
+            // 必须落在 UTF-8 字符起始字节上，否则会从半个汉字中间替换，直接产生乱码
+            if (i > 0 && (static_cast<unsigned char>(out[i]) & 0xC0) == 0x80) continue;
             std::string seg = out.substr(i, wlen);
             // 只在同一 UTF-8 字符边界上比较
             int diff = 0;

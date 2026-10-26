@@ -110,6 +110,7 @@ bool loadConfig() {
 
     c.subTheme = j.getString("sub_theme", "green");
     c.subPos = j.getString("sub_pos", "bottom");
+    c.micDeviceId = j.getString("mic_device_id", "");
     c.subSizeDst = j.getInt("sub_size_dst", 18);
     c.subSizeSrc = j.getInt("sub_size_src", 14);
     c.windowX = j.getInt("window_x", -1);
@@ -140,6 +141,7 @@ bool saveConfig() {
     j.set("hotwords", c.hotwords);
     j.set("sub_theme", c.subTheme);
     j.set("sub_pos", c.subPos);
+    j.set("mic_device_id", c.micDeviceId);
     j.set("sub_size_dst", c.subSizeDst);
     j.set("sub_size_src", c.subSizeSrc);
     j.set("window_x", c.windowX);

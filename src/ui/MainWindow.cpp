@@ -462,6 +462,12 @@ void MainWindow::initWidgets() {
     subTop_ = (c.subPos == "top");
 
     // 设备
+    deviceBox_.setOnChange([this](int i) {
+        if (i >= 0 && static_cast<size_t>(i) < devices_.size()) {
+            config().micDeviceId = devices_[static_cast<size_t>(i)].id;
+            saveConfig();
+        }
+    });
     refreshDevices();
 
     // 应用模式语言限制
@@ -1527,7 +1533,7 @@ void MainWindow::onCorrectToggled(bool on) {
         cfg.cbSize = sizeof(cfg);
         cfg.hwndParent = hwnd_;
         cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-        cfg.pszWindowTitle = L"Hearizon Sync";
+        cfg.pszWindowTitle = L"Hearizon Sync C.R.V.";
         cfg.pszMainIcon = TD_WARNING_ICON;
         cfg.pszMainInstruction = toWide(str::kCorrectConsumeTitle).c_str();
         cfg.pszContent = toWide(str::kCorrectConsumeBody).c_str();
@@ -1590,16 +1596,50 @@ void MainWindow::onPositionChanged(bool top) {
 }
 
 void MainWindow::refreshDevices() {
-    auto devices = enumerateInputDevices();
+    devices_ = enumerateInputDevices();
     std::vector<std::string> names;
-    for (const auto& d : devices) {
+    for (const auto& d : devices_) {
         std::string n = "[" + std::to_string(d.index) + "] " + d.name;
         if (d.isLoopbackLike) n += "  【系统声音】";
         names.push_back(n);
     }
     deviceBox_.setItems(names);
-    if (!names.empty()) deviceBox_.setSelected(0);
-    setStatus("已刷新设备：" + std::to_string(names.size()) + " 个", theme().accent);
+    if (names.empty()) {
+        setStatus("没找到任何录音设备", theme().red);
+        return;
+    }
+    // 先按上次保存的 id 还原，找不到再按「已启用 + 非虚拟声卡」的顺序挑
+    int pick = -1;
+    const std::string want = config().micDeviceId;
+    if (!want.empty()) {
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            if (devices_[i].id == want) { pick = static_cast<int>(i); break; }
+        }
+    }
+    if (pick < 0) {
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            if (devices_[i].active && !devices_[i].isLoopbackLike) {
+                pick = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (pick < 0) {
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            if (devices_[i].active) { pick = static_cast<int>(i); break; }
+        }
+    }
+    if (pick < 0) pick = 0;
+    deviceBox_.setSelected(pick);
+
+    int usable = 0;
+    for (const auto& d : devices_) if (d.active) ++usable;
+    std::string msg = "已刷新设备：" + std::to_string(names.size()) + " 个（可用 " +
+                      std::to_string(usable) + "）";
+    const AudioDevice& cur = devices_[static_cast<size_t>(pick)];
+    if (!cur.active)
+        msg += "　当前选中的不可用，请到系统声音设置里启用";
+    setStatus(msg, theme().accent);
 }
 
 void MainWindow::applyModeLanguages() {

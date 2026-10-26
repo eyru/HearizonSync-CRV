@@ -29,6 +29,7 @@ struct State {
     HWND edHotwords = nullptr;
     bool updateCheck = true;
     bool saved = false;
+    bool suppress = false;   // 程序自己清空输入框时不重复判定暗号
     bool running = true;
     double scale = 1.0;
 
@@ -322,6 +323,25 @@ LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     if (msg == WM_CHAR && wp == VK_RETURN) return 0;
+    // 独家模块 2 系列：输入框里打完暗号立刻生效，不需要点保存
+    // （Python 版绑定的是 <KeyRelease>，这里对齐同样的时机）
+    if (msg == WM_KEYUP) {
+        State* s = g_state;
+        if (s && !s->suppress &&
+            (h == s->edDeepseek || h == s->edYoudaoKey || h == s->edYoudaoSecret)) {
+            std::string t = fieldText(h);
+            if (!t.empty()) {
+                s->suppress = true;
+                if (eggs::handleInput(s->hwnd, t)) {
+                    setFieldText(h, "");
+                    s->suppress = false;
+                    SetFocus(h);
+                    return 0;
+                }
+                s->suppress = false;
+            }
+        }
+    }
     return CallWindowProcW(g_editOld, h, msg, wp, lp);
 }
 

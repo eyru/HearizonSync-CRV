@@ -1,6 +1,8 @@
 // Hearizon Sync C.R.V. - 主窗口
 #pragma once
 
+#include "audio/AudioCapture.h"
+
 #include <windows.h>
 
 #include <atomic>
@@ -142,6 +144,7 @@ private:
     // 独家模块
 
     HINSTANCE hInst_ = nullptr;
+    std::vector<AudioDevice> devices_;  // 当前枚举到的输入设备
     HWND hwnd_ = nullptr;
 
     // 侧栏控件

@@ -36,6 +36,7 @@ private:
     bool running_ = false;
     HICON idleIcon_ = nullptr;
     HICON liveIcon_ = nullptr;
+    bool ownsIcons_ = false;   // 图标是本次加载的还是资源缓存里的
     EventCallback onEvent_;
     bool added_ = false;
 };

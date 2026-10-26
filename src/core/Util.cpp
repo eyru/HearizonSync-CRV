@@ -33,6 +33,27 @@ std::string toUtf8(const std::wstring& wide) {
     return out;
 }
 
+bool isValidUtf8(const std::string& s) {
+    size_t i = 0;
+    const size_t n = s.size();
+    while (i < n) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        int need = 0;
+        if (c < 0x80) { ++i; continue; }
+        else if ((c & 0xE0) == 0xC0) { need = 1; if (c < 0xC2) return false; }
+        else if ((c & 0xF0) == 0xE0) { need = 2; }
+        else if ((c & 0xF8) == 0xF0) { need = 3; if (c > 0xF4) return false; }
+        else return false;
+        if (i + static_cast<size_t>(need) >= n) return false;
+        for (int k = 1; k <= need; ++k) {
+            unsigned char cc = static_cast<unsigned char>(s[i + static_cast<size_t>(k)]);
+            if ((cc & 0xC0) != 0x80) return false;
+        }
+        i += static_cast<size_t>(need) + 1;
+    }
+    return true;
+}
+
 bool startsWith(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
@@ -414,7 +435,7 @@ std::string fileTimestamp() {
 
 std::string outputDir() {
     // 与 Python 版一致的候选顺序：文档 / 桌面 / 用户目录 / 临时目录
-    const char* kSub = "Hearizon Sync";
+    const char* kSub = "Hearizon Sync C.R.V.";
     std::vector<std::string> candidates;
 
     wchar_t docs[MAX_PATH] = {0};

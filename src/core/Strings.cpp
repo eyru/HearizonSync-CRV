@@ -3,7 +3,7 @@
 namespace hs {
 namespace str {
 
-const char* kAppTitle = "Hearizon Sync";
+const char* kAppTitle = "Hearizon Sync C.R.V.";
 const char* kSidebarTitle = "Hearizon\nSync";
 const char* kSidebarTagline = "实时字幕翻译";
 
@@ -130,7 +130,7 @@ const char* kModulePoemTitle = "山有木兮";
 const char* kModuleDeveloperTitle = "关于作者";
 const char* kModuleHorizon = "听见地平线之外的声音。\n—— Hear + Horizon + Sync";
 
-const char* kTrayTip = "Hearizon Sync";
+const char* kTrayTip = "Hearizon Sync C.R.V.";
 const char* kTrayShow = "显示主窗口";
 const char* kTrayToggle = "开始/停止";
 const char* kTrayQuit = "退出";

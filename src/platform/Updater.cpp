@@ -25,11 +25,12 @@ void Updater::setCallbacks(AvailableCallback onAvail, ProgressCallback onProgres
 }
 
 std::string Updater::apiUrl() {
-    return "https://api.github.com/repos/eyru/HearizonSync/releases/latest";
+    // 必须指向 C.R.V. 自己的仓库。写错成 Python 版仓库会让用户被引导去装 Python 版。
+    return "https://api.github.com/repos/eyru/HearizonSync-CRV/releases/latest";
 }
 
 std::string Updater::pageUrl() {
-    return "https://github.com/eyru/HearizonSync/releases/latest";
+    return "https://github.com/eyru/HearizonSync-CRV/releases/latest";
 }
 
 void Updater::cancel() { cancel_.store(true); }
@@ -60,18 +61,20 @@ void Updater::checkWorker() {
     info.body = j.getString("body");
     info.pageUrl = j.getString("html_url", pageUrl());
 
+    // 只认 C.R.V. 自己的安装包。即使仓库地址将来又被写错，也不会把别的版本装进来。
     const Json* assets = j.find("assets");
     if (assets) {
         for (size_t i = 0; i < assets->size(); ++i) {
             const Json* a = assets->at(i);
             if (!a) continue;
             std::string name = toLower(a->getString("name"));
-            if (endsWith(name, ".exe")) {
-                info.downloadUrl = a->getString("browser_download_url");
-                break;
-            }
+            if (!endsWith(name, ".exe")) continue;
+            if (name.find("crv") == std::string::npos) continue;
+            info.downloadUrl = a->getString("browser_download_url");
+            break;
         }
     }
+    if (info.downloadUrl.empty()) return;   // 没有对应的 C.R.V. 资产就不提示更新
 
     if (cancel_.load()) return;
     if (onAvail_) onAvail_(info);
@@ -98,7 +101,7 @@ bool progressTrampoline(long long got, long long total, void* user) {
 void Updater::downloadWorker(std::string url, std::string tag) {
     std::string safeTag = tag;
     if (!safeTag.empty() && (safeTag[0] == 'v' || safeTag[0] == 'V')) safeTag.erase(0, 1);
-    std::string path = joinPath(tempDir(), "HearizonSync-Setup-" + safeTag + ".exe");
+    std::string path = joinPath(tempDir(), "HearizonSync-CRV-Setup-" + safeTag + ".exe");
 
     ProgressCtx ctx{onProgress_};
     long long total = 0;

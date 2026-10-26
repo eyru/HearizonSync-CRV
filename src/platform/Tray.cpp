@@ -3,6 +3,7 @@
 #include <shellapi.h>
 
 #include "core/Strings.h"
+#include "core/Theme.h"
 #include "core/Util.h"
 
 namespace hs {
@@ -21,13 +22,23 @@ TrayIcon::~TrayIcon() { stop(); }
 bool TrayIcon::start(HWND owner, const std::string& idleIcon, const std::string& liveIcon,
                      const std::string& tip) {
     owner_ = owner;
-    idleIcon_ = static_cast<HICON>(
-        LoadImageW(nullptr, toWide(idleIcon).c_str(), IMAGE_ICON, 0, 0,
-                   LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    // 优先用 exe 里编译进去的图标资源：不依赖当前工作目录，装在任���地方都对
+    const int px = GetSystemMetrics(SM_CXSMICON);
+    idleIcon_ = appIcon(px, false);
+    liveIcon_ = appIcon(px, true);
+    ownsIcons_ = false;
+    // 资源里没有才退回按文件加载
+    if (!idleIcon_) {
+        idleIcon_ = static_cast<HICON>(
+            LoadImageW(nullptr, toWide(idleIcon).c_str(), IMAGE_ICON, px, px, LR_LOADFROMFILE));
+        ownsIcons_ = true;
+    }
     if (!idleIcon_) idleIcon_ = LoadIconW(nullptr, IDI_APPLICATION);
-    liveIcon_ = static_cast<HICON>(
-        LoadImageW(nullptr, toWide(liveIcon).c_str(), IMAGE_ICON, 0, 0,
-                   LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    if (!liveIcon_) {
+        liveIcon_ = static_cast<HICON>(
+            LoadImageW(nullptr, toWide(liveIcon).c_str(), IMAGE_ICON, px, px, LR_LOADFROMFILE));
+        if (liveIcon_) ownsIcons_ = true;
+    }
     if (!liveIcon_) liveIcon_ = idleIcon_;
 
     ZeroMemory(&nid_, sizeof(nid_));
@@ -49,7 +60,7 @@ void TrayIcon::stop() {
         Shell_NotifyIconW(NIM_DELETE, &nid_);
         added_ = false;
     }
-    if (idleIcon_ && idleIcon_ != LoadIconW(nullptr, IDI_APPLICATION)) {
+    if (ownsIcons_ && idleIcon_ && idleIcon_ != LoadIconW(nullptr, IDI_APPLICATION)) {
         DestroyIcon(idleIcon_);
     }
     idleIcon_ = nullptr;

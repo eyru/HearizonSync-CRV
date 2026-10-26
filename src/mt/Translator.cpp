@@ -584,7 +584,11 @@ std::string ApiTranslator::correct(const std::string& text, const std::string& l
     body.set("messages", messages);
     body.set("stream", false);
     body.set("temperature", 0.0);
-    body.set("max_tokens", 300);
+    // 写死 300 会让长句被截成半截，看着就像乱码
+    int cap = static_cast<int>(text.size()) * 3 + 160;
+    if (cap < 300) cap = 300;
+    if (cap > 2000) cap = 2000;
+    body.set("max_tokens", cap);
 
     HttpResult r = httpPostJson(kDeepseekApi, body.dump(),
                                 {{"Authorization", "Bearer " + key},
@@ -598,8 +602,43 @@ std::string ApiTranslator::correct(const std::string& text, const std::string& l
     if (!c0) return text;
     const Json* msg = c0->find("message");
     if (!msg) return text;
-    std::string out = trim(msg->getString("content"));
-    return out.empty() ? text : out;
+    std::string raw = msg->getString("content");
+
+    // 模型偶尔会用 markdown 包一层，或者加一句「修正后：」，直接显示就是乱码样
+    std::string out = markdownToPlain(raw, raw.size() + 32);
+    out = trim(out);
+
+    // 去掉常见前缀标签
+    static const char* labels[] = {"修正后：", "修正后:", "纠错后：", "纠错后:",
+                                   "结果：", "结果:", "输出：", "输出:"};
+    for (const char* lb : labels) {
+        size_t n = std::strlen(lb);
+        if (out.compare(0, n, lb) == 0) {
+            out = trim(out.substr(n));
+            break;
+        }
+    }
+    // 去掉整体包裹的引号
+    if (out.size() >= 2) {
+        static const char* qs[] = {"\"", "\u201c", "「", "『"};
+        static const char* qe[] = {"\"", "\u201d", "」", "』"};
+        for (int k = 0; k < 4; ++k) {
+            size_t a = std::strlen(qs[k]);
+            size_t b = std::strlen(qe[k]);
+            if (out.size() > a + b && out.compare(0, a, qs[k]) == 0 &&
+                out.compare(out.size() - b, b, qe[k]) == 0) {
+                out = trim(out.substr(a, out.size() - a - b));
+                break;
+            }
+        }
+    }
+    if (out.empty()) return text;
+    // 输出比原文长太多，说明它在解释而不是纠错
+    if (out.size() > text.size() * 3 + 60) return text;
+    // 含替换字符或非法 UTF-8 字节，宁可不错
+    if (!isValidUtf8(out)) return text;
+    if (out.find("\xEF\xBF\xBD") != std::string::npos) return text;
+    return out;
 }
 
 // ---------------------------------------------------------------- Translator

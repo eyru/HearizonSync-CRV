@@ -29,9 +29,14 @@ VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}.0"
 VIAddVersionKey "LegalCopyright"  "© 2026 ${APP_PUBLISHER}"
 
+; 安装包本体（Setup.exe）在资源管理器里显示成我们自己的 logo
+Icon "..\resources\app.ico"
+UninstallIcon "..\resources\app.ico"
+
 !define MUI_ABORTWARNING
-!define MUI_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-!define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+; 安装向导页的图标也用我们自己的，不用 NSIS 自带的蓝色箭头
+!define MUI_ICON "..\resources\app.ico"
+!define MUI_UNICON "..\resources\app.ico"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES

@@ -151,9 +151,47 @@ void paintAbout(HDC dc, Card* c) {
             theme().accent2, true, DT_CENTER | DT_TOP | DT_WORDBREAK);
     }
 
-    RECT vr{x, P(c, 362), x + w, P(c, 378)};
-    drawText(dc, toWide(std::string("v") + appVersion()), vr, theme().faint,
-             uiFont(Dpi::fontPt(8)), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    // 模块 1 的入口。版本号做成胶囊按钮：有边框、有底色，悬停点亮。
+    // 光靠一行同色系小字，没人会想到去点它。
+    const std::wstring ver = toWide(std::string("v") + appVersion());
+    HFONT vf = uiFont(Dpi::fontPt(9));
+    SIZE vsz{};
+    {
+        HGDIOBJ of = SelectObject(dc, vf);
+        GetTextExtentPoint32W(dc, ver.c_str(), static_cast<int>(ver.size()), &vsz);
+        SelectObject(dc, of);
+    }
+    const bool vHover = (c->hover == 3);
+    const int capH = P(c, 26);
+    const int capW = vsz.cx + P(c, 30);
+    const int capCx = x + w / 2;
+    RECT cap{capCx - capW / 2, P(c, 358), capCx + capW / 2, P(c, 358) + capH};
+
+    {
+        HBRUSH b = CreateSolidBrush(vHover ? theme().cardHover : theme().card);
+        HPEN pn = CreatePen(PS_SOLID, 1, vHover ? theme().accent2 : theme().border2);
+        HGDIOBJ ob = SelectObject(dc, b);
+        HGDIOBJ op = SelectObject(dc, pn);
+        roundRect(dc, cap, capH / 2);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(b);
+        DeleteObject(pn);
+    }
+    txt(dc, c, std::string("v") + appVersion(), cap.left, cap.top, capW, capH, 9,
+        vHover ? theme().accent2 : theme().accent, false,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    // 悬停时补一条下划线，强化「可以点」的暗示
+    if (vHover) {
+        const int ux = capCx - vsz.cx / 2;
+        const int uy = (cap.top + cap.bottom) / 2 + vsz.cy / 2;
+        HPEN upen = CreatePen(PS_SOLID, 1, theme().accent2);
+        HGDIOBJ op = SelectObject(dc, upen);
+        MoveToEx(dc, ux, uy, nullptr);
+        LineTo(dc, ux + vsz.cx, uy);
+        SelectObject(dc, op);
+        DeleteObject(upen);
+    }
 
     closeButton(dc, c);
 }
@@ -345,6 +383,7 @@ LRESULT CALLBACK CardProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int h = 0;
             if (hit(c->rcClose, x, y)) h = 1;
             else if (c->kind == Kind::Developer && hit(c->rcLink, x, y)) h = 2;
+            else if (c->kind == Kind::About && hit(c->rcVersion, x, y)) h = 3;
             if (h != c->hover) {
                 c->hover = h;
                 SetCursor(LoadCursorW(nullptr, h ? IDC_HAND : IDC_ARROW));
@@ -476,7 +515,7 @@ void openCard(HWND owner, Kind kind, const wchar_t* title, const Geometry& g) {
     c->rcClose = {cw / 2 - P(c, g.closeW) / 2, P(c, g.closeY),
                   cw / 2 + P(c, g.closeW) / 2, P(c, g.closeY + g.closeH)};
     // 模块 1 的点击区跟着「关于」页里的版本号位置走
-    c->rcVersion = {P(c, 30), P(c, 358), cw - P(c, 30), P(c, 382)};
+    c->rcVersion = {P(c, 30), P(c, 352), cw - P(c, 30), P(c, 390)};
     c->rcLink = {P(c, 32), P(c, 176), P(c, 332), P(c, 198)};
 
     ShowWindow(hwnd, SW_SHOW);

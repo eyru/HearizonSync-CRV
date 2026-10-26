@@ -9,6 +9,7 @@ namespace hs {
 // UTF-8 <-> UTF-16（Windows 原生宽字符）
 std::wstring toWide(const std::string& utf8);
 std::string toUtf8(const std::wstring& wide);
+bool isValidUtf8(const std::string& s);
 
 // 字符串工具
 bool startsWith(const std::string& s, const std::string& prefix);

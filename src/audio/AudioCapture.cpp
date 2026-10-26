@@ -212,8 +212,14 @@ std::vector<AudioDevice> enumerateInputDevices() {
                                   reinterpret_cast<void**>(&enumerator));
     if (FAILED(hr) || !enumerator) return out;
 
+    // 把已启用、已禁用、未插入、不存在四种状态的录音设备全部列出来。
+    // 只列「已启用」会让用户在自己机器上找不到熟悉的那个麦克风。
     IMMDeviceCollection* collection = nullptr;
-    hr = enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection);
+    hr = enumerator->EnumAudioEndpoints(
+        eCapture,
+        DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED |
+            DEVICE_STATE_UNPLUGGED | DEVICE_STATE_NOTPRESENT,
+        &collection);
     if (FAILED(hr) || !collection) {
         enumerator->Release();
         return out;
@@ -227,6 +233,14 @@ std::vector<AudioDevice> enumerateInputDevices() {
 
         AudioDevice d;
         d.index = static_cast<int>(i);
+        DWORD st = 0;
+        if (SUCCEEDED(dev->GetState(&st))) {
+            d.active = (st & DEVICE_STATE_ACTIVE) != 0;
+            if (st & DEVICE_STATE_ACTIVE) d.stateText = "已启用";
+            else if (st & DEVICE_STATE_DISABLED) d.stateText = "已禁用";
+            else if (st & DEVICE_STATE_UNPLUGGED) d.stateText = "未插入";
+            else d.stateText = "不存在";
+        }
 
         LPWSTR id = nullptr;
         if (SUCCEEDED(dev->GetId(&id)) && id) {
@@ -246,6 +260,8 @@ std::vector<AudioDevice> enumerateInputDevices() {
             props->Release();
         }
         if (d.name.empty()) d.name = "Input " + std::to_string(i);
+        if (!d.active && !d.stateText.empty())
+            d.name += "（" + d.stateText + "）";
 
         std::string upper = toLower(d.name);
         d.isLoopbackLike = upper.find("cable") != std::string::npos ||
@@ -275,7 +291,11 @@ public:
         }
 
         IMMDeviceCollection* coll = nullptr;
-        hr = enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &coll);
+        hr = enumerator->EnumAudioEndpoints(
+            eCapture,
+            DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED |
+                DEVICE_STATE_UNPLUGGED | DEVICE_STATE_NOTPRESENT,
+            &coll);
         if (FAILED(hr) || !coll) {
             enumerator->Release();
             *err = "无法枚举输入设备";

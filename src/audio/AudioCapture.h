@@ -17,8 +17,10 @@ constexpr int kBlockSize = kSampleRate * kBlockMs / 1000;
 struct AudioDevice {
     int index = -1;
     std::string name;
-    std::string id;          // WASAPI endpoint id
+    std::string id;          // WASAPI endpoint id（选择设备只认这个，不认序号）
     bool isLoopbackLike = false;   // 名字里带 CABLE / 立体声混音 等
+    bool active = false;     // 当前是否处于「已启用」状态，只有启用的才能录音
+    std::string stateText;   // 已启用 / 已禁用 / 未插入 / 不存在
 };
 
 // 枚举所有可用输入设备

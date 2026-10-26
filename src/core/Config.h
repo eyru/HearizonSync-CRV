@@ -46,6 +46,7 @@ struct Config {
     // 界面
     std::string subTheme;
     std::string subPos;
+    std::string micDeviceId;   // 上次选中的录音设备 endpoint id
     int subSizeDst = 18;
     int subSizeSrc = 14;
     int windowX = -1;

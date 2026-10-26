@@ -31,7 +31,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmdLine, int show) {
 
     hs::MainWindow win;
     if (!win.create(hInst)) {
-        MessageBoxW(nullptr, L"窗口创建失败", L"Hearizon Sync", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"窗口创建失败", L"Hearizon Sync C.R.V.", MB_OK | MB_ICONERROR);
         CoUninitialize();
         return 1;
     }

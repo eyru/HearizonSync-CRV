@@ -143,7 +143,10 @@ double VadProcessor::noiseFloor() const {
     if (noiseHist_.empty()) return 0.0;
     std::vector<double> s = noiseHist_;
     std::sort(s.begin(), s.end());
-    return s[static_cast<size_t>(s.size() * 0.20)];
+    double v = s[static_cast<size_t>(s.size() * 0.20)];
+    // 上限保护：再差的底噪也不该把阈值顶到人声之上，
+    // 否则安静环境里音量偏小的用户会被全程判成静音。
+    return std::min(v, 0.045);
 }
 
 double VadProcessor::threshold() const {
@@ -181,10 +184,14 @@ void VadProcessor::process(const float* data, int frames) {
     double rms = rmsOf(data, frames);
     if (onLevel_) onLevel_(rms);
 
-    noiseHist_.push_back(rms);
-    if (noiseHist_.size() > 180) noiseHist_.erase(noiseHist_.begin());
-
-    bool voiced = rms > threshold();
+    // 噪声底只统计「不像语音」的块。旧版本把每一块都塞进历史，
+    // 用户一按开始就说话 → 噪声底被自己的声音抬到人声之上 → 阈值锁死，
+    // 之后全程判成静音，表现出来同样是「麦克风不收音」。
+    const bool voiced = rms > threshold();
+    if (!voiced) {
+        noiseHist_.push_back(rms);
+        if (noiseHist_.size() > 180) noiseHist_.erase(noiseHist_.begin());
+    }
 
     if (voiced) {
         active_ = true;

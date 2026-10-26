@@ -5,6 +5,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #include "core/Strings.h"
@@ -151,6 +152,8 @@ bool MainWindow::create(HINSTANCE hInst) {
         [this](const std::vector<float>& a) { onPartial(a); });
 
     initWidgets();
+    syncRuntimeCfg();  // 先把控件状态镜像出去，worker 起来后就有值可读
+    startWorker();
     layout();
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
@@ -297,6 +300,9 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd_, kTimerPump);
             KillTimer(hwnd_, kTimerUpdate);
             KillTimer(hwnd_, kTimerSilence);
+            // 先停采集（不再产生任务）再停识别线程，避免退出时还在跑 ASR
+            stopCapture();
+            stopWorker();
             PostQuitMessage(0);
             return 0;
         }
@@ -754,12 +760,23 @@ void MainWindow::paintSidebar(HDC dc) {
              uiFont(Dpi::fontPt(9)), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     y += 26 * scale;
 
-    // 音量条
+    // 音量条：轨道常驻，有信号时按实时电平填充
     RECT levelRc{left, y, rcSidebar_.right - left, y + 6 * scale};
     HBRUSH track = CreateSolidBrush(theme().border);
     FillRect(dc, &levelRc, track);
     DeleteObject(track);
-    // 由 onLevel 更新（这里画固定最小宽度）
+    {
+        const int lv = levelPermille_.load(std::memory_order_relaxed);
+        if (lv > 12) {
+            int barW = (levelRc.right - levelRc.left) * lv / 1000;
+            if (barW < 3) barW = 3;
+            RECT fill{levelRc.left, levelRc.top, levelRc.left + barW, levelRc.bottom};
+            // 过载换亮绿，正常用 listen 色
+            HBRUSH brush = CreateSolidBrush(lv > 700 ? theme().accent2 : theme().listen);
+            FillRect(dc, &fill, brush);
+            DeleteObject(brush);
+        }
+    }
     y += 16 * scale;
 
     // 分隔线
@@ -1149,6 +1166,29 @@ void MainWindow::onTimer(UINT_PTR id) {
 // ---------------------------------------------------------------- 业务
 void MainWindow::startCapture() {
     if (running_.load()) return;
+
+    int devIndex = 0;
+    std::string dev = deviceBox_.selectedText();
+    if (!dev.empty() && dev[0] == '[') {
+        devIndex = std::atoi(dev.c_str() + 1);
+    }
+
+    // 预检：设备不是「已启用」就直接提示，别让界面先显示「正在监听」
+    // 再无声无息地什么都没发生——那正是用户眼里的「麦克风不收音」
+    for (const auto& d : devices_) {
+        if (d.index == devIndex && !d.active) {
+            std::string why = d.stateText.empty() ? "设备状态不可用" : d.stateText;
+            MessageBoxW(hwnd_,
+                        toWide("当前选中的录音设备不可用（" + why +
+                               "）。\n\n请到「设置 → 系统 → 声音」里确认该设备已启用，"
+                               "或在下拉框里换一个设备。")
+                            .c_str(),
+                        L"麦克风不可用", MB_OK | MB_ICONWARNING);
+            setStatus(str::kMicError, theme().red);
+            return;
+        }
+    }
+
     running_.store(true);
     stopping_.store(false);
     startTick_ = GetTickCount();
@@ -1157,21 +1197,17 @@ void MainWindow::startCapture() {
     sessionStart_ = nowSeconds();
     lastSpeechTick_ = GetTickCount();
     silenceWarned_ = false;
+    levelPermille_.store(0);
 
     btnStart_.setText(str::kStop);
     btnStart_.setColors(theme().red, RGB(0xEF, 0x44, 0x44), RGB(0xFF, 0xFF, 0xFF));
     setStatus(str::kStarting, theme().yellow);
 
-    int devIndex = 0;
-    std::string dev = deviceBox_.selectedText();
-    if (!dev.empty() && dev[0] == '[') {
-        devIndex = std::atoi(dev.c_str() + 1);
-    }
-
     capture_->vad().reset();
     std::string err = capture_->start(devIndex);
     if (!err.empty()) {
         running_.store(false);
+        levelPermille_.store(0);
         setStatus(str::kMicError, theme().red);
         MessageBoxW(hwnd_, toWide(err).c_str(), L"麦克风错误", MB_OK | MB_ICONWARNING);
         btnStart_.setText(str::kStart);
@@ -1188,6 +1224,7 @@ void MainWindow::stopCapture() {
     if (capture_) capture_->stop();
     running_.store(false);
     stopping_.store(false);
+    levelPermille_.store(0);
     btnStart_.setText(str::kStart);
     btnStart_.setColors(theme().accent, theme().accent2, RGB(0x03, 0x21, 0x1A));
     setStatus(str::kStopped, theme().dim);
@@ -1195,12 +1232,106 @@ void MainWindow::stopCapture() {
 }
 
 void MainWindow::onLevel(double rms) {
-    (void)rms;
-    // 电平条绘制由 paint 处理；此处只在变化明显时刷新
+    // 采集线程：只做一次原子写，绝不在这里碰窗口
+    double v = rms / 0.06;
+    if (v < 0.0) v = 0.0;
+    if (v > 1.0) v = 1.0;
+    int p = static_cast<int>(std::sqrt(v) * 1000.0);
+    levelPermille_.store(p, std::memory_order_relaxed);
+}
+
+// ------------------------------------------------------------------
+// 采集线程 -> 识别线程 的桥
+// 采集线程只把音频丢进队列就返回；ASR 与翻译在 worker 里串行做。
+// 旧版本在采集线程里同步跑 ASR（每 0.32s 一次）+ 整句翻译（1~3s），
+// WASAPI 缓冲会被拖爆，表现出来就是「麦克风不收音」。
+// ------------------------------------------------------------------
+
+void MainWindow::syncRuntimeCfg() {
+    // 控件只有 UI 线程能摸，后台任务需要的两项在这里镜像出去
+    std::string target = targetLangBox_.selectedText();
+    bool correct = correctCheck_.checked();
+    std::lock_guard<std::mutex> guard(cfgMutex_);
+    cfgTargetLang_ = target;
+    cfgCorrect_ = correct;
+}
+
+void MainWindow::enqueueAudio(bool isFinal, const std::vector<float>& audio) {
+    {
+        std::lock_guard<std::mutex> guard(workerLock_);
+        if (isFinal) {
+            // 句末结果要尽快跑：还没开始的临时结果全部丢掉
+            jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(),
+                                       [](const AudioJob& j) { return !j.final_; }),
+                        jobs_.end());
+        } else {
+            // 临时结果只留最新一条，旧的直接替换
+            for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+                if (!it->final_) {
+                    jobs_.erase(it);
+                    break;
+                }
+            }
+        }
+        AudioJob job;
+        job.final_ = isFinal;
+        job.audio = audio;
+        jobs_.push_back(std::move(job));
+    }
+    workerCv_.notify_one();
+}
+
+void MainWindow::startWorker() {
+    {
+        std::lock_guard<std::mutex> guard(workerLock_);
+        workerStop_ = false;
+        jobs_.clear();
+    }
+    if (worker_.joinable()) return;
+    worker_ = std::thread([this]() { workerLoop(); });
+}
+
+void MainWindow::stopWorker() {
+    {
+        std::lock_guard<std::mutex> guard(workerLock_);
+        workerStop_ = true;
+        jobs_.clear();
+    }
+    workerCv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void MainWindow::workerLoop() {
+    for (;;) {
+        AudioJob job;
+        {
+            std::unique_lock<std::mutex> lk(workerLock_);
+            workerCv_.wait(lk, [this]() { return workerStop_ || !jobs_.empty(); });
+            if (workerStop_ && jobs_.empty()) return;
+            job = std::move(jobs_.front());
+            jobs_.pop_front();
+        }
+        if (!running_.load()) continue;  // 已停止采集，残余任务直接丢弃
+        if (job.final_) {
+            processSentence(job.audio);
+        } else {
+            processPartial(job.audio);
+        }
+    }
 }
 
 void MainWindow::onPartial(const std::vector<float>& audio) {
     if (!running_.load() || !recognizer_) return;
+    enqueueAudio(false, audio);
+}
+
+void MainWindow::onSentence(const std::vector<float>& audio) {
+    if (!running_.load() || !recognizer_) return;
+    enqueueAudio(true, audio);
+}
+
+void MainWindow::processPartial(const std::vector<float>& audio) {
+    if (!recognizer_) return;
     std::string err;
     AsrResult r = recognizer_->transcribe(audio, &err);
     if (r.empty()) return;
@@ -1211,15 +1342,14 @@ void MainWindow::onPartial(const std::vector<float>& audio) {
     postMessage(msg);
 }
 
-void MainWindow::onSentence(const std::vector<float>& audio) {
-    if (!running_.load()) return;
+void MainWindow::processSentence(const std::vector<float>& audio) {
     UiMessage st;
     st.kind = UiMessage::Kind::Status;
     st.s1 = str::kRecognizing;
     postMessage(st);
 
     std::string err;
-    AsrResult r = recognizer_->transcribe(audio, &err);
+    AsrResult r = recognizer_ ? recognizer_->transcribe(audio, &err) : AsrResult{};
     if (r.text.empty()) {
         UiMessage m;
         m.kind = UiMessage::Kind::Status;
@@ -1235,9 +1365,18 @@ void MainWindow::onSentence(const std::vector<float>& audio) {
         return;
     }
 
+    // 后台线程读配置镜像（不能直接摸控件）
+    std::string target;
+    bool doCorrect = false;
+    {
+        std::lock_guard<std::mutex> guard(cfgMutex_);
+        target = cfgTargetLang_;
+        doCorrect = cfgCorrect_;
+    }
+
     // 自动纠错
     std::string text = r.text;
-    if (correctCheck_.checked() && translator_) {
+    if (doCorrect && translator_) {
         text = translator_->autoCorrect(text, r.lang);
     }
 
@@ -1267,14 +1406,15 @@ void MainWindow::onSentence(const std::vector<float>& audio) {
     begin.s1 = ts;
     postMessage(begin);
 
-    std::string target = targetLangBox_.selectedText();
-    MtResult mt = translator_->translate(
-        text, target, r.lang, [this](const std::string& chunk) {
+    MtResult mt;
+    if (translator_) {
+        mt = translator_->translate(text, target, r.lang, [this](const std::string& chunk) {
             UiMessage c;
             c.kind = UiMessage::Kind::DstChunk;
             c.s1 = chunk;
             postMessage(c);
         });
+    }
 
     UiMessage end;
     end.kind = UiMessage::Kind::DstEnd;
@@ -1292,6 +1432,7 @@ void MainWindow::postMessage(UiMessage msg) {
 }
 
 void MainWindow::pumpUiMessages() {
+    syncRuntimeCfg();  // 60ms 一次，把控件状态同步给后台识别线程
     std::queue<UiMessage> local;
     {
         std::lock_guard<std::mutex> guard(queueLock_);
@@ -1613,7 +1754,12 @@ void MainWindow::refreshDevices() {
     const std::string want = config().micDeviceId;
     if (!want.empty()) {
         for (size_t i = 0; i < devices_.size(); ++i) {
-            if (devices_[i].id == want) { pick = static_cast<int>(i); break; }
+            // 记住的设备这次若是「未插入 / 已禁用」，别死认它：
+            // 否则用户一按开始就撞上「设备不可用」，看起来就是麦克风坏了
+            if (devices_[i].id == want && devices_[i].active) {
+                pick = static_cast<int>(i);
+                break;
+            }
         }
     }
     if (pick < 0) {

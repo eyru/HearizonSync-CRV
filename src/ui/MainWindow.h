@@ -108,6 +108,17 @@ private:
     void pumpUiMessages();
     void applyMessage(const UiMessage& msg);
 
+    // 识别/翻译工作线程：采集线程只负责把音频丢进队列，绝不在这里跑 ASR，
+    // 否则一句话卡 1~3 秒会让 WASAPI 缓冲溢出、听感上就是"不收音"。
+    void enqueueAudio(bool isFinal, const std::vector<float>& audio);
+    void startWorker();
+    void stopWorker();
+    void workerLoop();
+    void processPartial(const std::vector<float>& audio);
+    void processSentence(const std::vector<float>& audio);
+    // 把控件状态镜像到后台线程可读的字段（由 UI 线程定期调用）
+    void syncRuntimeCfg();
+
     // 侧栏动作
     void onModeChanged(int index);
     void onApiEngineChanged(int index);
@@ -204,8 +215,25 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
+
+    // 后台识别任务：句末结果（final）优先，未执行的 partial 会被丢弃
+    struct AudioJob {
+        bool final_ = false;
+        std::vector<float> audio;
+    };
     std::thread worker_;
     std::mutex workerLock_;
+    std::condition_variable workerCv_;
+    std::deque<AudioJob> jobs_;
+    bool workerStop_ = false;
+
+    // 后台线程不能碰控件：由 UI 线程定期同步的配置镜像
+    std::mutex cfgMutex_;
+    std::string cfgTargetLang_;
+    bool cfgCorrect_ = false;
+
+    // 实时电平（0..1000），采集线程写、paint 读
+    std::atomic<int> levelPermille_{0};
 
     // UI 消息队列
     std::mutex queueLock_;
@@ -236,7 +264,8 @@ private:
     static constexpr UINT_PTR kTimerPump = 1;
     static constexpr UINT_PTR kTimerUpdate = 2;
     static constexpr UINT_PTR kTimerWelcome = 3;
-    static constexpr UINT_PTR kTimerSilence = 3;
+    // 静音提醒走 kTimerPump，这里只是保留一个不冲突的 id（原来与 kTimerWelcome 同值）
+    static constexpr UINT_PTR kTimerSilence = 4;
 
     DWORD lastSpeechTick_ = 0;
     bool silenceWarned_ = false;

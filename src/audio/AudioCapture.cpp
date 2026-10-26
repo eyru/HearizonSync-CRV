@@ -18,11 +18,24 @@ DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x1
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "core/Util.h"
 
 namespace hs {
+
+// 采集链路诊断开关：/DHS_AUDIO_DEBUG 编译时把每一步 HRESULT 打到 stderr
+#ifdef HS_AUDIO_DEBUG
+#define AUD_DBG(...)                          \
+    do {                                      \
+        std::fprintf(stderr, "[AUD] " __VA_ARGS__); \
+        std::fprintf(stderr, "\n");           \
+        std::fflush(stderr);                  \
+    } while (0)
+#else
+#define AUD_DBG(...) ((void)0)
+#endif
 
 namespace {
 
@@ -363,15 +376,26 @@ public:
     // 读取一块并重采样到 16k 单声道；返回 false 表示结束
     bool read(std::vector<float>* out) {
         UINT32 packet = 0;
-        if (FAILED(capture_->GetNextPacketSize(&packet))) return false;
+        HRESULT ghr = capture_->GetNextPacketSize(&packet);
+#ifdef HS_AUDIO_DEBUG
+        static int dbgNext = 0;
+        if (dbgNext < 40) {
+            ++dbgNext;
+            AUD_DBG("GetNextPacketSize hr=0x%08lX packet=%u",
+                    static_cast<unsigned long>(ghr), packet);
+        }
+#endif
+        if (FAILED(ghr)) return false;
 
         bool got = false;
         while (packet > 0) {
             BYTE* data = nullptr;
             UINT32 frames = 0;
             DWORD flags = 0;
-            if (FAILED(capture_->GetBuffer(&data, &frames, &flags, nullptr, nullptr)))
-                break;
+            HRESULT bhr = capture_->GetBuffer(&data, &frames, &flags, nullptr, nullptr);
+            AUD_DBG("GetBuffer hr=0x%08lX frames=%u flags=0x%08lX",
+                    static_cast<unsigned long>(bhr), frames, flags);
+            if (FAILED(bhr)) break;
             if (frames > 0 && !(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                 appendFrames(data, frames);
                 got = true;
@@ -390,8 +414,13 @@ public:
         return got;
     }
 
-    void start() { client_->Start(); }
-    void stop() { client_->Stop(); }
+    HRESULT start() {
+        if (!client_) return E_POINTER;
+        return client_->Start();
+    }
+    void stop() {
+        if (client_) client_->Stop();
+    }
 
     void close() {
         if (capture_) { capture_->Release(); capture_ = nullptr; }
@@ -468,8 +497,21 @@ std::string AudioCapture::start(int deviceIndex) {
     deviceIndex_ = deviceIndex;
     stopFlag_.store(false);
     lastError_.clear();
+    startupDone_.store(false);
     running_.store(true);
     thread_ = std::thread([this]() { run(); });
+
+    // 等后台线程完成 open + Start（正常几十毫秒），把失败原因同步返回给界面。
+    // 超时也继续跑：慢机器上首次打开设备可能偏慢，不该因此误报失败。
+    for (int i = 0; i < 60 && !startupDone_.load(); ++i) Sleep(10);
+
+    std::string err = lastError_;
+    if (!err.empty()) {
+        stopFlag_.store(true);
+        if (thread_.joinable()) thread_.join();
+        running_.store(false);
+        return err;
+    }
     return std::string();
 }
 
@@ -480,30 +522,64 @@ void AudioCapture::stop() {
 }
 
 void AudioCapture::run() {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT cohr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    AUD_DBG("run enter coinit=0x%08lX devIndex=%d",
+            static_cast<unsigned long>(cohr), deviceIndex_);
     WasapiCapture cap;
     std::string err;
     if (!cap.open(deviceIndex_, &err)) {
+        AUD_DBG("open FAILED: %s", err.c_str());
         lastError_ = err;
         running_.store(false);
+        startupDone_.store(true);
         CoUninitialize();
         return;
     }
-    cap.start();
+    AUD_DBG("open ok srcRate=%d", cap.sampleRate());
+    HRESULT shr = cap.start();
+    AUD_DBG("Start hr=0x%08lX", static_cast<unsigned long>(shr));
+    if (FAILED(shr)) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "音频流启动失败（0x%08lX）",
+                      static_cast<unsigned long>(shr));
+        lastError_ = buf;
+        cap.close();
+        running_.store(false);
+        startupDone_.store(true);
+        CoUninitialize();
+        return;
+    }
 
+    startupDone_.store(true);
     std::vector<float> chunk;
+    std::vector<float> pending;  // 跨 read 累积，拼满 30ms 再喂 VAD
+    pending.reserve(static_cast<size_t>(kBlockSize) * 8);
+    int dbgIter = 0;
     while (!stopFlag_.load()) {
         chunk.clear();
-        if (cap.read(&chunk) && !chunk.empty()) {
-            // 按 30ms 切块喂给 VAD
-            int blockFrames = kBlockSize;
-            for (size_t i = 0; i + blockFrames <= chunk.size(); i += blockFrames) {
-                vad_.process(chunk.data() + i, blockFrames);
+        bool okRead = cap.read(&chunk);
+        if (dbgIter < 12) {
+            AUD_DBG("loop#%d read=%d size=%d", dbgIter, static_cast<int>(okRead),
+                    static_cast<int>(chunk.size()));
+        }
+        ++dbgIter;
+        if (okRead && !chunk.empty()) {
+            // 单次 WASAPI 包重采样后通常只有 160~320 帧，小于 30ms 的 480 帧；
+            // 直接按 480 切片会一次都切不出来（旧版本就是这么让麦克风"不收音"的）。
+            pending.insert(pending.end(), chunk.begin(), chunk.end());
+            size_t off = 0;
+            for (; off + static_cast<size_t>(kBlockSize) <= pending.size();
+                 off += static_cast<size_t>(kBlockSize)) {
+                vad_.process(pending.data() + off, kBlockSize);
             }
+            if (off > 0) pending.erase(pending.begin(), pending.begin() + off);
+            // 兜底：万一本机时钟异常导致缓冲失控，丢掉旧数据重新积累
+            if (pending.size() > static_cast<size_t>(kBlockSize) * 64) pending.clear();
         } else {
             Sleep(5);
         }
     }
+    AUD_DBG("run exit iters=%d", dbgIter);
 
     cap.stop();
     cap.close();
@@ -521,7 +597,13 @@ bool AudioCapture::testMic(int deviceIndex, int durationMs, double* rms, double*
         CoUninitialize();
         return false;
     }
-    cap.start();
+    HRESULT testHr = cap.start();
+    if (FAILED(testHr)) {
+        cap.close();
+        if (error) *error = "音频流启动失败";
+        CoUninitialize();
+        return false;
+    }
 
     double sumSq = 0.0;
     long long total = 0;

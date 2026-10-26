@@ -96,6 +96,9 @@ private:
     int deviceIndex_ = -1;
     VadProcessor vad_;
     std::string lastError_;
+    // start() 会等后台线程完成 open+Start，把真实失败原因同步带回调用方，
+    // 否则界面会先显示「正在监听」再无声无息地什么都没发生。
+    std::atomic<bool> startupDone_{false};
     void* impl_ = nullptr;
 };
 

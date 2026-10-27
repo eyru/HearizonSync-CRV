@@ -239,6 +239,14 @@ private:
     std::mutex queueLock_;
     std::queue<UiMessage> queue_;
 
+    // 译文流式预览：
+    //   DstBegin 记下时间戳（先不落行）→ DstChunk 累积到 dstStreamed_ 并用
+    //   TextView 的 partial 行做实时预览 → DstEnd 才 clearPartial + appendLine 落成正式行。
+    // 这样无论引擎走流式（增量回调）还是非流式（一次性回调整句），
+    // 译文都只会被画一遍，不会出现「一句话弹两次」。
+    std::string dstStreamed_;   // 本次译文已收到的内容
+    std::string dstBeginTs_;    // 本次译文的时间戳（DstBegin 带来）
+
     // 统计
     long long sentences_ = 0;
     long long charsIn_ = 0;

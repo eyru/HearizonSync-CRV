@@ -202,6 +202,9 @@ void MainWindow::exportSrt() {
 void MainWindow::clearSubtitles() {
     srcView_.clear();
     dstView_.clear();
+    // 流式预览的中间状态也要一起清，否则下一句会把上一句的半截接上去
+    dstStreamed_.clear();
+    dstBeginTs_.clear();
     srcScroll_.setPosition(0);
     dstScroll_.setPosition(0);
     sentences_ = charsIn_ = charsOut_ = 0;

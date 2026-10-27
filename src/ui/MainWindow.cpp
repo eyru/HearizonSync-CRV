@@ -1482,17 +1482,30 @@ void MainWindow::applyMessage(const UiMessage& msg) {
         }
 
         case UiMessage::Kind::DstBegin:
-            dstView_.append("[" + msg.s1 + "] ");
+            // 先只记住时间戳，不落行：真正的正文要等 DstEnd 才知道全貌。
+            // 中间过程用 partial 预览，避免「预览一遍 + 定稿一遍」。
+            dstBeginTs_ = msg.s1;
+            dstStreamed_.clear();
             break;
 
         case UiMessage::Kind::DstChunk:
-            dstView_.append(msg.s1);
+            dstStreamed_ += msg.s1;
+            // 流式预览：临时行渲染在最后，下一次 setPartial 直接替换，
+            // DstEnd 时 clearPartial 就消失 —— 不会在正文区留下重复内容。
+            dstView_.setPartial("[" + dstBeginTs_ + "] " + dstStreamed_);
             break;
 
         case UiMessage::Kind::DstEnd: {
             // 只显示译文本身。来源（本地模型/免费(MyMemory)/本地兜底…）一律不挂尾巴：
             // 模式是用户自己选的，每句后面追一个出处只是噪音。
-            dstView_.appendLine(msg.s1);
+            //
+            // 注意：这里必须「先撤掉流式预览、再落一行定稿」。
+            // 旧代码在 DstBegin 就 appendLine 开了行、DstEnd 又 appendLine 整句，
+            // 于是同一句译文被画了两遍 —— 用户看到的就是「一句话弹两次」。
+            dstView_.clearPartial();
+            dstView_.appendLine("[" + dstBeginTs_ + "] " + msg.s1);
+            dstBeginTs_.clear();
+            dstStreamed_.clear();
             if (!segments_.empty() && segments_.back().dst.empty()) {
                 segments_.back().dst = msg.s1;
                 segments_.back().end = nowSeconds();

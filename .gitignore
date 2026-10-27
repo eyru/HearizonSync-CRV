@@ -35,6 +35,8 @@ desktop.ini
 *.log
 *.tmp
 ~$*
+__pycache__/
+*.pyc
 
 # ---- 根目录/测试目录散落的运行库 ----
 /*.dll

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "core/Http.h"
 #include "core/Strings.h"
 #include "core/Theme.h"
 #include "core/Util.h"
@@ -160,6 +161,10 @@ bool MainWindow::create(HINSTANCE hInst) {
 
     SetTimer(hwnd_, kTimerPump, 60, nullptr);
     lastSpeechTick_ = GetTickCount();
+
+    // 后台探一次代理：系统代理指向死端口时，首次翻译要白等一整个连接超时。
+    // 放到独立线程里做，不阻塞界面显示。
+    std::thread([] { warmUpProxy(); }).detach();
 
     // 启动后 4 秒检查更新
     SetTimer(hwnd_, kTimerUpdate, 4000, nullptr);
@@ -1485,9 +1490,9 @@ void MainWindow::applyMessage(const UiMessage& msg) {
             break;
 
         case UiMessage::Kind::DstEnd: {
-            std::string line = msg.s1;
-            if (!msg.s2.empty()) line += "    — " + msg.s2;
-            dstView_.appendLine(line);
+            // 只显示译文本身。来源（本地模型/免费(MyMemory)/本地兜底…）一律不挂尾巴：
+            // 模式是用户自己选的，每句后面追一个出处只是噪音。
+            dstView_.appendLine(msg.s1);
             if (!segments_.empty() && segments_.back().dst.empty()) {
                 segments_.back().dst = msg.s1;
                 segments_.back().end = nowSeconds();

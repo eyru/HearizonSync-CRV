@@ -66,7 +66,7 @@ private:
 
     std::string tryMyMemory(const std::string& text, const std::string& src,
                             const std::string& tgt);
-    std::string tryYoudaoFree(const std::string& text);
+    std::string tryYoudaoFree(const std::string& text, const std::string& tgt);
     std::string tryLocal(const std::string& text);
 
     void rollDay();

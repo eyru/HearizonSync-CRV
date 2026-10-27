@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winhttp.h>
 
+#include <atomic>
 #include <cstdio>
 
 #include "Util.h"
@@ -61,9 +62,40 @@ int statusCode(HINTERNET req) {
     return static_cast<int>(code);
 }
 
+// 系统代理可能是死端口：VPN 客户端没启动，注册表里却还留着 ProxyEnable=1
+// 和一条指向 127.0.0.1 的代理配置。这种情况下 WinHTTP 的 AUTOMATIC_PROXY
+// 会把每个请求都送到那个死端口，全部连接失败——调用方看到的就是"网络不通"。
+// 这里记住"代理坏了"，5 分钟内直接直连，避免每个请求都白等一整个超时；
+// 过期后重新给代理一次机会，这样用户开上 VPN 也能自动恢复。
+std::atomic<bool> g_preferDirect{false};
+std::atomic<double> g_directUntil{0.0};
+
+bool proxyShouldSkip() {
+    if (!g_preferDirect.load()) return false;
+    if (nowSeconds() > g_directUntil.load()) {
+        g_preferDirect.store(false);
+        return false;
+    }
+    return true;
+}
+
+DWORD pickAccessType() {
+    return proxyShouldSkip() ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                             : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+}
+
+void markProxyBroken() {
+    g_preferDirect.store(true);
+    g_directUntil.store(nowSeconds() + 300.0);
+}
+
+void markProxyGood() {
+    if (g_preferDirect.load()) g_preferDirect.store(false);
+}
+
 }  // namespace
 
-HttpResult httpRequest(const HttpRequest& reqIn) {
+HttpResult httpRequestOnce(const HttpRequest& reqIn, DWORD accessType) {
     HttpResult out;
     UrlParts u;
     if (!crackUrl(reqIn.url, u)) {
@@ -73,7 +105,7 @@ HttpResult httpRequest(const HttpRequest& reqIn) {
 
     // session/connect 生命周期需要覆盖整个请求，这里展开写
     HINTERNET session = WinHttpOpen(L"HearizonSync/2.5.6",
-                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    accessType,
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session) {
         out.error = "WinHttpOpen failed";
@@ -139,6 +171,36 @@ HttpResult httpRequest(const HttpRequest& reqIn) {
     return out;
 }
 
+HttpResult httpRequest(const HttpRequest& reqIn) {
+    DWORD mode = pickAccessType();
+    HttpResult r = httpRequestOnce(reqIn, mode);
+    if (r.status != 0) {
+        if (mode == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY) markProxyGood();
+        return r;
+    }
+    // 经代理失败，直连再试一次：直连能成，就说明问题出在系统代理配置上
+    if (mode == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY) {
+        HttpResult r2 = httpRequestOnce(reqIn, WINHTTP_ACCESS_TYPE_NO_PROXY);
+        if (r2.status != 0) {
+            markProxyBroken();
+            return r2;
+        }
+    }
+    return r;
+}
+
+void warmUpProxy() {
+    // 用一个必然可达的国内 HTTPS 端点探一次：能连上说明当前路（代理或直连）可用。
+    // 走 httpRequest 是为了复用它的"代理失败→直连重试→记住结果"逻辑。
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    HttpRequest r;
+    r.url = "https://aidemo.youdao.com/trans?q=hi&from=auto&to=zh-CHS";
+    r.headers["User-Agent"] = "Mozilla/5.0";
+    r.timeoutSec = 3;
+    httpRequest(r);
+}
+
 HttpResult httpGet(const std::string& url,
                    const std::map<std::string, std::string>& headers, int timeoutSec) {
     HttpRequest r;
@@ -173,7 +235,7 @@ bool httpDownload(const std::string& url, const std::string& savePath,
     }
 
     HINTERNET session = WinHttpOpen(L"HearizonSync/2.5.6",
-                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    pickAccessType(),
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session) {
         if (errorOut) *errorOut = "WinHttpOpen failed";
@@ -265,7 +327,7 @@ bool httpPostStream(const std::string& url, const std::string& json,
     }
 
     HINTERNET session = WinHttpOpen(L"HearizonSync/2.5.6",
-                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    pickAccessType(),
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session) {
         if (errorOut) *errorOut = "WinHttpOpen failed";

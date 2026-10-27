@@ -52,6 +52,12 @@ std::string mymemorySrcCode(const std::string& langCode) {
 bool isCjkTarget(const std::string& tgt) {
     return tgt == "zh-CN" || tgt == "ja" || tgt == "ko";
 }
+
+// 通用语言码 -> 有道代码（简体中文有道写作 zh-CHS）
+std::string youdaoToCode(const std::string& tgt) {
+    if (tgt == "zh-CN") return "zh-CHS";
+    return tgt;
+}
 }  // namespace
 
 // ---------------------------------------------------------------- 文本工具
@@ -260,9 +266,9 @@ std::string FreeOnlineTranslator::tryMyMemory(const std::string& text,
         std::string email = config().mymemoryEmail;
         if (!email.empty()) url += "&de=" + urlEncode(email);
 
-        HttpResult r = httpGet(url, {{"User-Agent", kFreeUa}}, 8);
+        HttpResult r = httpGet(url, {{"User-Agent", kFreeUa}}, 5);
         if (r.failed()) {
-            mmDeadUntil_ = nowSeconds() + 30;
+            mmDeadUntil_ = nowSeconds() + 300;
             if (onStatus_) onStatus_("MyMemory 连接失败，已切到备用免费源");
             return std::string();
         }
@@ -297,26 +303,27 @@ std::string FreeOnlineTranslator::tryMyMemory(const std::string& text,
     return joined;
 }
 
-std::string FreeOnlineTranslator::tryYoudaoFree(const std::string& text) {
+std::string FreeOnlineTranslator::tryYoudaoFree(const std::string& text,
+                                                const std::string& tgt) {
     double now = nowSeconds();
     if (now < ydDeadUntil_) return std::string();
 
-    // 每分钟最多 6 次
+    // 每分钟最多 15 次：既不至于被限频，也不会让同传时一直跳过
     std::vector<double> recent;
     for (double t : ydTimes_) {
         if (now - t < 60.0) recent.push_back(t);
     }
     ydTimes_ = recent;
-    if (ydTimes_.size() >= 6) {
+    if (ydTimes_.size() >= 15) {
         if (onStatus_) onStatus_("有道免费接口限频，稍后自动恢复");
         return std::string();
     }
 
     double gap = now - ydLast_;
-    if (gap < 4.0) Sleep(static_cast<DWORD>((4.0 - gap) * 1000));
+    if (gap < 0.6) Sleep(static_cast<DWORD>((0.6 - gap) * 1000));
 
     std::string url = std::string(kYoudaoFreeApi) + "?q=" + urlEncode(text) +
-                      "&from=auto&to=zh-CHS";
+                      "&from=auto&to=" + youdaoToCode(tgt);
     HttpResult r = httpGet(url,
                            {{"User-Agent", kFreeUa},
                             {"Referer", "https://ai.youdao.com/"}},
@@ -389,9 +396,9 @@ MtResult FreeOnlineTranslator::translate(const std::string& text,
         return out;
     }
 
-    // 2. 有道免费（仅中文目标）
-    if (tgt == "zh-CN") {
-        std::string r2 = tryYoudaoFree(input);
+    // 2. 有道免费（国内直连可通，支持全部目标语言）
+    {
+        std::string r2 = tryYoudaoFree(input, tgt);
         if (!r2.empty()) {
             if (cache_.size() > 400) cache_.clear();
             cache_[key] = r2;
@@ -417,7 +424,7 @@ MtResult FreeOnlineTranslator::translate(const std::string& text,
         }
     }
 
-    out.text = "[免费在线翻译暂时不可用：今日额度可能已用完或网络不通]";
+    out.text = "[免费翻译暂不可用：请检查网络或代理设置，也可以切到「本地翻译（离线）」]";
     out.provider = "免费(失败)";
     lastProvider_ = out.provider;
     return out;

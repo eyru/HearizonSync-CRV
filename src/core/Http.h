@@ -46,4 +46,8 @@ bool httpPostStream(const std::string& url, const std::string& json,
                     bool (*onLine)(const std::string& line, void* user), void* user,
                     int timeoutSec, std::string* errorOut);
 
+// 后台探测系统代理是否可用（系统代理指向死端口时，首次请求要白等一整个超时）。
+// 启动后调一次即可：探测结果缓存在进程内，后续请求直接走可用的那条路。
+void warmUpProxy();
+
 }  // namespace hs

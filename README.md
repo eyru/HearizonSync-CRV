@@ -161,7 +161,7 @@ makensis installer\HearizonSyncCRV.nsi
 
 ## 同系列项目
 
-Hearizon 拆成四个仓库，各自独立、可以只用其中一块：
+Hearizon 拆成五个仓库，各自独立、可以只用其中一块：
 
 | 项目 | 作用 | 语言 |
 |---|---|---|
@@ -169,6 +169,7 @@ Hearizon 拆成四个仓库，各自独立、可以只用其中一块：
 | [**Hearizon Sync**](https://github.com/eyru/HearizonSync) | 原版：实时字幕翻译软件 | Python |
 | [**HAE-NSG Core**](https://github.com/eyru/HAE-NSG-Core) | 音频前端：噪声抑制与增益 | Python + C++ |
 | [**HAE-VAD Core**](https://github.com/eyru/HAE-VAD-Core) | 音频前端：语音活动检测与切句 | Python + C++ |
+| **Audysis-NSG**（原 HAE-NSG-2） | 音频前端第二代：判决引导维纳滤波 + 神经降噪 + 电平编排（专有许可，源码未公开） | Python |
 
 本项目与 Python 版**功能一致**：三条翻译路线、三种字幕配色、六套独家模块、在线更新、
 托盘、SRT 导出、热词与远场增强，都在。差别只在实现语言与体积。
